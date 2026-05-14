@@ -166,6 +166,11 @@ class FilePortalHandler(BaseHTTPRequestHandler):
     .dropzone {{ border: 2px dashed #aaa; border-radius: 8px; padding: 20px; margin: 10px 0; background: #fafafa; }}
     .dropzone.dragover {{ border-color: #0a66c2; background: #eef6ff; }}
     .two-col {{ display: grid; grid-template-columns: 1fr; gap: 20px; }}
+    .section-header {{ display: flex; align-items: center; gap: 0.75rem; }}
+    .toggle-on, .toggle-off {{ padding: 3px 10px; font-size: 0.75rem; font-weight: 600;
+      border: none; border-radius: 12px; cursor: pointer; letter-spacing: 0.05em; }}
+    .toggle-on {{ background: #0a7d24; color: #fff; }}
+    .toggle-off {{ background: #ccc; color: #555; }}
   </style>
 </head>
 <body>
@@ -180,20 +185,25 @@ class FilePortalHandler(BaseHTTPRequestHandler):
       <button type="submit">Upload</button>
     </form>
 
-    <h3>Web Scraper</h3>
-    <p class="meta">Fetch and extract text from any public URL. Optionally target elements with a CSS selector.</p>
-    <form action="/scrape" method="post">
-      <label for="scrape_url">URL</label><br />
-      <input type="url" id="scrape_url" name="url" required
-        style="width:100%; padding:8px; margin:4px 0 12px; border:1px solid #ddd; border-radius:4px; font-size:1rem;"
-        placeholder="https://example.com" /><br />
-      <label for="scrape_selector">CSS Selector <span class="meta">(optional — e.g. article, .content, h1)</span></label><br />
-      <input type="text" id="scrape_selector" name="selector"
-        style="width:100%; padding:8px; margin:4px 0 12px; border:1px solid #ddd; border-radius:4px; font-size:1rem;"
-        placeholder="Leave blank to extract all body text" /><br />
-      <button type="submit">Scrape</button>
-    </form>
-    {scrape_section}
+    <h3 class="section-header">
+      Web Scraper
+      <button type="button" id="scrape-toggle" class="toggle-off" onclick="toggleScraper()">OFF</button>
+    </h3>
+    <div id="scraper-body" style="display:none;">
+      <p class="meta">Fetch and extract text from any public URL. Optionally target elements with a CSS selector.</p>
+      <form action="/scrape" method="post">
+        <label for="scrape_url">URL</label><br />
+        <input type="url" id="scrape_url" name="url" required
+          style="width:100%; padding:8px; margin:4px 0 12px; border:1px solid #ddd; border-radius:4px; font-size:1rem;"
+          placeholder="https://example.com" /><br />
+        <label for="scrape_selector">CSS Selector <span class="meta">(optional — e.g. article, .content, h1)</span></label><br />
+        <input type="text" id="scrape_selector" name="selector"
+          style="width:100%; padding:8px; margin:4px 0 12px; border:1px solid #ddd; border-radius:4px; font-size:1rem;"
+          placeholder="Leave blank to extract all body text" /><br />
+        <button type="submit">Scrape</button>
+      </form>
+      {scrape_section}
+    </div>
 
     <h3>AI Prompt</h3>
     <form action="/ai" method="post">
@@ -247,6 +257,26 @@ class FilePortalHandler(BaseHTTPRequestHandler):
       }}
     }});
     input.addEventListener("change", updateCount);
+
+    function toggleScraper() {{
+      const body = document.getElementById("scraper-body");
+      const btn = document.getElementById("scrape-toggle");
+      const opening = body.style.display === "none";
+      body.style.display = opening ? "block" : "none";
+      btn.textContent = opening ? "ON" : "OFF";
+      btn.className = opening ? "toggle-on" : "toggle-off";
+    }}
+
+    // Auto-open if a scrape result is present (i.e. user just scraped)
+    document.addEventListener("DOMContentLoaded", function() {{
+      if (document.getElementById("scrape-result")) {{
+        const body = document.getElementById("scraper-body");
+        const btn = document.getElementById("scrape-toggle");
+        body.style.display = "block";
+        btn.textContent = "ON";
+        btn.className = "toggle-on";
+      }}
+    }});
   </script>
 </body>
 </html>
