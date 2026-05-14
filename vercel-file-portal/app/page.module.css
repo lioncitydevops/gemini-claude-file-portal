@@ -129,6 +129,30 @@
   background: #f3f3f3;
 }
 
+.toggleOn,
+.toggleOff {
+  display: inline-block;
+  margin-left: 0.75rem;
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  vertical-align: middle;
+  letter-spacing: 0.05em;
+}
+
+.toggleOn {
+  background: #0a7d24;
+  color: #fff;
+}
+
+.toggleOff {
+  background: #ccc;
+  color: #555;
+}
+
 .inputText {
   display: block;
   width: 100%;

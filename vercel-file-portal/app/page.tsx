@@ -32,6 +32,7 @@ export default function Home() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [scrapeEnabled, setScrapeEnabled] = useState(false);
   const [scrapeUrl, setScrapeUrl] = useState('');
   const [scrapeSelector, setScrapeSelector] = useState('');
   const [scrapeContent, setScrapeContent] = useState('');
@@ -253,52 +254,67 @@ export default function Home() {
           </button>
         </form>
 
-        <h2 className={styles.sectionTitle}>Web Scraper</h2>
-        <p className={styles.meta}>Fetch and extract text from any public URL, then send it to AI.</p>
-        <form onSubmit={handleScrape}>
-          <label className={styles.label} htmlFor="scrapeUrl">URL</label>
-          <input
-            id="scrapeUrl"
-            type="url"
-            value={scrapeUrl}
-            onChange={(e) => setScrapeUrl(e.target.value)}
-            className={styles.inputText}
-            placeholder="https://example.com"
-            required
-          />
-          <label className={styles.label} htmlFor="scrapeSelector">
-            CSS Selector <span className={styles.meta}>(optional — e.g. article, .content, h1)</span>
-          </label>
-          <input
-            id="scrapeSelector"
-            type="text"
-            value={scrapeSelector}
-            onChange={(e) => setScrapeSelector(e.target.value)}
-            className={styles.inputText}
-            placeholder="Leave blank to extract all body text"
-          />
-          <button type="submit" className={styles.button} disabled={scrapeLoading} style={{ marginTop: '1rem' }}>
-            {scrapeLoading ? 'Scraping...' : 'Scrape'}
+        <h2 className={styles.sectionTitle}>
+          Web Scraper
+          <button
+            type="button"
+            className={scrapeEnabled ? styles.toggleOn : styles.toggleOff}
+            onClick={() => setScrapeEnabled(v => !v)}
+            aria-pressed={scrapeEnabled}
+          >
+            {scrapeEnabled ? 'ON' : 'OFF'}
           </button>
-        </form>
+        </h2>
 
-        {scrapeContent && (
-          <div className={styles.aiResult}>
-            <p className={scrapeError ? styles.error : styles.ok}>
-              {scrapeError ? 'Error' : `Scraped: ${scrapeUrl}`}
-            </p>
-            <pre className={styles.resultPre}>{scrapeContent}</pre>
-            {!scrapeError && (
-              <button
-                type="button"
-                className={styles.button}
-                style={{ marginTop: '0.75rem' }}
-                onClick={() => setAiPrompt(scrapeContent)}
-              >
-                Use as AI Prompt
+        {scrapeEnabled && (
+          <>
+            <p className={styles.meta}>Fetch and extract text from any public URL, then send it to AI.</p>
+            <form onSubmit={handleScrape}>
+              <label className={styles.label} htmlFor="scrapeUrl">URL</label>
+              <input
+                id="scrapeUrl"
+                type="url"
+                value={scrapeUrl}
+                onChange={(e) => setScrapeUrl(e.target.value)}
+                className={styles.inputText}
+                placeholder="https://example.com"
+                required
+              />
+              <label className={styles.label} htmlFor="scrapeSelector">
+                CSS Selector <span className={styles.meta}>(optional — e.g. article, .content, h1)</span>
+              </label>
+              <input
+                id="scrapeSelector"
+                type="text"
+                value={scrapeSelector}
+                onChange={(e) => setScrapeSelector(e.target.value)}
+                className={styles.inputText}
+                placeholder="Leave blank to extract all body text"
+              />
+              <button type="submit" className={styles.button} disabled={scrapeLoading} style={{ marginTop: '1rem' }}>
+                {scrapeLoading ? 'Scraping...' : 'Scrape'}
               </button>
+            </form>
+
+            {scrapeContent && (
+              <div className={styles.aiResult}>
+                <p className={scrapeError ? styles.error : styles.ok}>
+                  {scrapeError ? 'Error' : `Scraped: ${scrapeUrl}`}
+                </p>
+                <pre className={styles.resultPre}>{scrapeContent}</pre>
+                {!scrapeError && (
+                  <button
+                    type="button"
+                    className={styles.button}
+                    style={{ marginTop: '0.75rem' }}
+                    onClick={() => setAiPrompt(scrapeContent)}
+                  >
+                    Use as AI Prompt
+                  </button>
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
 
         <h2 className={styles.sectionTitle}>AI Prompt</h2>
