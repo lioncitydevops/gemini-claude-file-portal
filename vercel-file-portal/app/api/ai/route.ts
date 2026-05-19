@@ -1,15 +1,56 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { generateText } from 'ai';
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { generateText, tool } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { put } from '@vercel/blob';
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 
 // Initialize Google AI with explicit API key
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || '');
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 20;
 const MAX_PROMPT_CHARS = 12_000;
+const MAX_SCRAPE_CHARS = 12_000;
 const rateBucket = new Map<string, { count: number; windowStart: number }>();
+
+async function scrapeUrlForAI(url: string, _selector?: string): Promise<string> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return `HTTP ${res.status} fetching ${url}`;
+    const html = await res.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return text.slice(0, MAX_SCRAPE_CHARS) || '(no content extracted)';
+  } catch (err) {
+    return `Error scraping ${url}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+const SCRAPE_TOOL_DESCRIPTION =
+  'Fetch and extract text content from a web page. Use this to retrieve current, real-world information from the web.';
+
+const SYSTEM_INSTRUCTION =
+  'You have access to a web scraping tool that can fetch content from any public URL. ' +
+  'When answering questions that would benefit from current or real-world information — ' +
+  'such as news, events, prices, documentation, product details, or any live web content — ' +
+  'proactively decide which reputable websites to scrape based on the topic. ' +
+  'Do NOT wait for the user to provide URLs. Choose appropriate sources yourself and scrape them to give accurate, up-to-date answers.';
 
 export type AIMode = 'gemini' | 'claude' | 'debate' | 'orchestrate';
 
@@ -171,64 +212,111 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 }
 
-async function runGemini(prompt: string): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-  const result = await model.generateContent(prompt);
-  const response = await result.response;
-  return response.text();
+async function runGemini(prompt: string, useTools = true): Promise<string> {
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction: useTools ? SYSTEM_INSTRUCTION : undefined,
+    tools: useTools
+      ? [
+          {
+            functionDeclarations: [
+              {
+                name: 'scrapeUrl',
+                description: SCRAPE_TOOL_DESCRIPTION,
+                parameters: {
+                  type: SchemaType.OBJECT,
+                  properties: {
+                    url: { type: SchemaType.STRING, description: 'The full URL of the web page to fetch' },
+                    selector: { type: SchemaType.STRING, description: 'Optional CSS selector to target specific elements' },
+                  },
+                  required: ['url'],
+                },
+              },
+            ],
+          },
+        ]
+      : undefined,
+  });
+
+  if (!useTools) {
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  }
+
+  const chat = model.startChat();
+  let result = await chat.sendMessage(prompt);
+  let calls = result.response.functionCalls();
+
+  while (calls && calls.length > 0) {
+    const parts = await Promise.all(
+      calls.map(async (call) => {
+        const args = call.args as { url: string; selector?: string };
+        return {
+          functionResponse: {
+            name: call.name,
+            response: { content: await scrapeUrlForAI(args.url, args.selector) },
+          },
+        };
+      })
+    );
+    result = await chat.sendMessage(parts);
+    calls = result.response.functionCalls();
+  }
+
+  return result.response.text();
 }
 
-async function runClaude(prompt: string): Promise<string> {
+async function runClaude(prompt: string, useTools = true): Promise<string> {
   const { text } = await generateText({
     model: anthropic('claude-sonnet-4-6'),
+    system: useTools ? SYSTEM_INSTRUCTION : undefined,
     prompt,
+    ...(useTools
+      ? {
+          tools: {
+            scrapeUrl: tool({
+              description: SCRAPE_TOOL_DESCRIPTION,
+              parameters: z.object({
+                url: z.string().describe('The full URL of the web page to fetch'),
+                selector: z.string().optional().describe('Optional CSS selector to target specific elements'),
+              }),
+              execute: async ({ url, selector }) => scrapeUrlForAI(url, selector),
+            }),
+          },
+          maxSteps: 5,
+        }
+      : {}),
   });
   return text;
 }
 
 async function runDebate(prompt: string): Promise<string> {
-  // Gemini takes a position
-  const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-  const geminiResult = await geminiModel.generateContent(`Take a position and justify: ${prompt}`);
-  const geminiResponse = await geminiResult.response;
-  const geminiText = geminiResponse.text();
-
-  // Claude critiques and improves
-  const claudeResponse = await generateText({
-    model: anthropic('claude-sonnet-4-6'),
-    prompt: `Critique and improve this response:\n${geminiText}`,
-  });
-
-  return `**Gemini:**\n${geminiText}\n\n**Claude:**\n${claudeResponse.text}`;
+  const geminiText = await runGemini(`Take a position and argue for it convincingly: ${prompt}`, false);
+  const claudeText = await runClaude(
+    `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\nNow argue the opposing side or provide a strong counter-argument to Gemini's position on: ${prompt}`,
+    false
+  );
+  return `**Gemini:**\n${geminiText}\n\n**Claude:**\n${claudeText}`;
 }
 
 async function runOrchestrate(prompt: string): Promise<string> {
-  const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-  // Step 1: Gemini creates a plan
-  const planResult = await geminiModel.generateContent(`Create a practical plan: ${prompt}`);
-  const planText = (await planResult.response).text();
-
-  // Step 2: Claude executes the plan
-  const draft = await generateText({
-    model: anthropic('claude-sonnet-4-6'),
-    prompt: `Execute this plan:\n${planText}`,
-  });
-
-  // Step 3: Gemini reviews
-  const reviewResult = await geminiModel.generateContent(`Review and improve:\n${draft.text}`);
-  const reviewText = (await reviewResult.response).text();
-
-  // Step 4: Claude produces final answer
-  const final = await generateText({
-    model: anthropic('claude-sonnet-4-6'),
-    prompt: `Produce final answer:\n${reviewText}`,
-  });
-
-  return `**Plan:**\n${planText}\n\n` +
-    `**Draft:**\n${draft.text}\n\n` +
-    `**Review:**\n${reviewText}\n\n` +
-    `**Final:**\n${final.text}`;
+  const planText = await runGemini(
+    `Create a practical step-by-step plan for: ${prompt}`,
+    false
+  );
+  const draft = await runClaude(
+    `Task: ${prompt}\n\nPlan:\n${planText}\n\nExecute the plan and produce a thorough response to the task.`,
+    false
+  );
+  const reviewText = await runGemini(
+    `Task: ${prompt}\n\nDraft response:\n${draft}\n\nReview this draft and suggest concrete improvements to better address the task.`,
+    false
+  );
+  const final = await runClaude(
+    `Task: ${prompt}\n\nReview feedback:\n${reviewText}\n\nWrite the final polished response to the task, incorporating the feedback.`,
+    false
+  );
+  return `**Plan (Gemini):**\n${planText}\n\n**Draft (Claude):**\n${draft}\n\n**Review (Gemini):**\n${reviewText}\n\n**Final (Claude):**\n${final}`;
 }
 
 function getClientIp(request: Request): string {
