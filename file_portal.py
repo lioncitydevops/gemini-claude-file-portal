@@ -129,8 +129,9 @@ class FilePortalHandler(BaseHTTPRequestHandler):
             ai_class = "error" if ai_error else "ok"
             ai_alert = (
                 f"<h3>AI Result</h3><p class='{ai_class}'>Mode: {html.escape(ai_mode)}</p>"
-                "<pre style='white-space: pre-wrap; background: #f7f7f7; border: 1px solid #ddd; padding: 10px;'>"
+                "<pre id='ai-result' style='white-space: pre-wrap; background: #f7f7f7; border: 1px solid #ddd; padding: 10px;'>"
                 f"{html.escape(ai_result)}</pre>"
+                "<button type='button' onclick='downloadAiWord()' style='margin-top:8px;'>Download as Word (.doc)</button>"
             )
 
         scrape_section = ""
@@ -179,8 +180,8 @@ class FilePortalHandler(BaseHTTPRequestHandler):
     <p class="meta">Allowed extensions: {html.escape(extensions)}</p>
     {alert}
     <form action="/upload" method="post" enctype="multipart/form-data">
-      <div id="dropzone" class="dropzone">Drag and drop files here, or use file picker</div>
-      <input id="file-input" type="file" name="file" multiple required />
+      <div id="dropzone" class="dropzone" onclick="document.getElementById('file-input').click()">Drag and drop files here, or click to choose files</div>
+      <input id="file-input" type="file" name="file" multiple required style="display:none" />
       <p class="meta" id="file-count">No files selected</p>
       <button type="submit">Upload</button>
     </form>
@@ -257,6 +258,28 @@ class FilePortalHandler(BaseHTTPRequestHandler):
       }}
     }});
     input.addEventListener("change", updateCount);
+
+    function downloadAiWord() {{
+      const resultEl = document.getElementById("ai-result");
+      const mode = document.getElementById("mode").value;
+      const prompt = document.getElementById("prompt").value;
+      const result = resultEl ? resultEl.textContent : "";
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const body = `
+        <html><head><meta charset="utf-8"><title>AI Output</title></head><body>
+        <h1>AI Output (${{mode}})</h1>
+        <p><strong>Time:</strong> ${{new Date().toLocaleString()}}</p>
+        <h2>Prompt</h2><pre>${{prompt.replace(/</g, "&lt;")}}</pre>
+        <h2>Result</h2><pre>${{result.replace(/</g, "&lt;")}}</pre>
+        </body></html>`;
+      const blob = new Blob(["\\ufeff", body], {{ type: "application/msword" }});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `ai-${{mode}}-${{stamp}}.doc`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }}
 
     function toggleScraper() {{
       const body = document.getElementById("scraper-body");

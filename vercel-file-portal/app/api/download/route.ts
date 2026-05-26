@@ -1,5 +1,5 @@
-import { list } from '@vercel/blob';
 import { NextResponse } from 'next/server';
+import { readStoredFile } from '@/lib/storage';
 
 export async function GET(request: Request): Promise<NextResponse> {
   try {
@@ -9,39 +9,22 @@ export async function GET(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'Missing file name.' }, { status: 400 });
     }
 
-    const { blobs } = await list({ prefix: name, limit: 1 });
-    const blob = blobs.find((item) => item.pathname === name);
-    if (!blob) {
-      return NextResponse.json({ error: 'File not found.' }, { status: 404 });
-    }
-
-    const token = process.env.BLOB_READ_WRITE_TOKEN;
-    if (!token) {
-      return NextResponse.json({ error: 'Blob token is not configured.' }, { status: 500 });
-    }
-
-    const upstream = await fetch(blob.url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!upstream.ok) {
-      return NextResponse.json({ error: 'Unable to fetch file from storage.' }, { status: 502 });
-    }
-
-    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
-    const contentLength = upstream.headers.get('content-length');
+    const { data, contentType } = await readStoredFile(name);
     const filename = name.split('/').pop() || 'download.bin';
 
-    return new NextResponse(upstream.body, {
+    return new NextResponse(new Uint8Array(data), {
       status: 200,
       headers: {
         'Content-Type': contentType,
-        ...(contentLength ? { 'Content-Length': contentLength } : {}),
+        'Content-Length': String(data.length),
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Cache-Control': 'private, no-store',
       },
     });
   } catch (error) {
     console.error('Download error:', error);
-    return NextResponse.json({ error: 'Download failed.' }, { status: 500 });
+    const message = error instanceof Error ? error.message : 'Download failed.';
+    const status = message.includes('not found') ? 404 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

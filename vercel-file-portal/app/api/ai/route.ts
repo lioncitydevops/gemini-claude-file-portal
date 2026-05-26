@@ -1,42 +1,21 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { generateText, tool } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
-import { put } from '@vercel/blob';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { MAX_SCRAPE_CHARS, scrapeUrl } from '@/lib/scrape';
+import { storeFile } from '@/lib/storage';
 
 // Initialize Google AI with explicit API key
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || '');
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 20;
 const MAX_PROMPT_CHARS = 12_000;
-const MAX_SCRAPE_CHARS = 12_000;
 const rateBucket = new Map<string, { count: number; windowStart: number }>();
 
-async function scrapeUrlForAI(url: string, _selector?: string): Promise<string> {
+async function scrapeUrlForAI(url: string, selector?: string): Promise<string> {
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        Accept: 'text/html,application/xhtml+xml',
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) return `HTTP ${res.status} fetching ${url}`;
-    const html = await res.text();
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/\s+/g, ' ')
-      .trim();
-    return text.slice(0, MAX_SCRAPE_CHARS) || '(no content extracted)';
+    return await scrapeUrl(url, selector);
   } catch (err) {
     return `Error scraping ${url}: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -158,13 +137,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     let fileUrl: string | null = null;
     let storageWarning: string | null = null;
     try {
-      const blob = await put(fileName, markdownContent, {
-        // Blob SDK types only expose "public" at this version, but private stores
-        // require private object access at runtime.
-        access: 'private' as unknown as 'public',
-        addRandomSuffix: false,
-      });
-      fileUrl = `/api/download?name=${encodeURIComponent(blob.pathname)}`;
+      const stored = await storeFile(fileName, markdownContent);
+      fileUrl = `/api/download?name=${encodeURIComponent(stored.name)}`;
     } catch (storageError) {
       console.error('Blob save warning:', storageError);
       storageWarning = 'AI response generated, but saving output file failed.';

@@ -113,6 +113,8 @@ vercel-file-portal/
 | `/api/files` | GET | List all uploaded files |
 | `/api/delete` | POST | Delete a file by name |
 | `/api/ai` | POST | Run AI prompt |
+| `/api/scrape` | POST | Scrape a public URL |
+| `/api/export-docx` | POST | Export AI result as Word (.docx) |
 
 ## Differences from Original Python Version
 
@@ -132,7 +134,8 @@ vercel-file-portal/
 - Check Vercel Functions logs for detailed error messages
 
 ### File upload issues
-- Ensure Vercel Blob is connected in your project
+- Ensure Vercel Blob is connected in your project, or rely on local fallback storage (`.upload-storage/`) when `BLOB_READ_WRITE_TOKEN` is unset
+- If using a private Blob store, set `BLOB_STORE_ACCESS=private`
 - Check that file size is under the limit (4.5MB for Hobby plan)
 - Verify file extension is in the allowed list
 

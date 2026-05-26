@@ -16,7 +16,8 @@
     "ai": "^4.0.0",
     "@google/generative-ai": "^0.21.0",
     "@ai-sdk/anthropic": "^1.0.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "docx": "^9.5.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

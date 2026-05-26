@@ -175,12 +175,28 @@
   border-radius: 4px;
 }
 
-.resultPre {
-  white-space: pre-wrap;
-  background: #fff;
-  border: 1px solid #ddd;
-  padding: 10px;
-  margin-top: 10px;
-  max-height: 400px;
-  overflow-y: auto;
+.linkButton {
+  background: none;
+  border: none;
+  color: #0a66c2;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.linkButton:hover:not(:disabled) {
+  color: #084c91;
+}
+
+.linkButton:disabled {
+  color: #999;
+  cursor: not-allowed;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
 }

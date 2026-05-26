@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import styles from './page.module.css';
 
 interface FileItem {
@@ -14,6 +14,8 @@ interface HistoryItem {
   time: string;
   mode: string;
   promptPreview: string;
+  prompt: string;
+  result: string;
   fileName: string;
   fileUrl: string | null;
 }
@@ -38,12 +40,18 @@ export default function Home() {
   const [scrapeContent, setScrapeContent] = useState('');
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [scrapeError, setScrapeError] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [storageMode, setStorageMode] = useState<'blob' | 'local' | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchFiles = useCallback(async () => {
     try {
       const res = await fetch('/api/files');
       const data = await res.json();
       setFiles(data.files || []);
+      if (data.storage === 'blob' || data.storage === 'local') {
+        setStorageMode(data.storage);
+      }
     } catch (err) {
       console.error('Failed to fetch files:', err);
     }
@@ -61,6 +69,15 @@ export default function Home() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedFiles(e.target.files);
+    setUploadMessage('');
+    setUploadError(false);
+  };
+
+  const resetFileInput = () => {
+    setSelectedFiles(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const handleUpload = async (e: React.FormEvent) => {
@@ -86,10 +103,13 @@ export default function Home() {
       if (res.ok) {
         setUploadMessage(data.message);
         setUploadError(data.blocked?.length > 0 && data.uploaded?.length === 0);
-        setSelectedFiles(null);
+        if (data.storage === 'blob' || data.storage === 'local') {
+          setStorageMode(data.storage);
+        }
+        resetFileInput();
         fetchFiles();
       } else {
-        setUploadMessage(data.error || 'Upload failed');
+        setUploadMessage(data.error || data.hint || 'Upload failed');
         setUploadError(true);
       }
     } catch {
@@ -183,6 +203,8 @@ export default function Home() {
           time: new Date().toLocaleString(),
           mode: data.mode,
           promptPreview: aiPrompt.length > 80 ? aiPrompt.slice(0, 80) + '...' : aiPrompt,
+          prompt: aiPrompt,
+          result: finalResult,
           fileName: data.fileName,
           fileUrl: data.fileUrl,
         };
@@ -214,6 +236,51 @@ export default function Home() {
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       setSelectedFiles(e.dataTransfer.files);
+      if (fileInputRef.current) {
+        fileInputRef.current.files = e.dataTransfer.files;
+      }
+      setUploadMessage('');
+      setUploadError(false);
+    }
+  };
+
+  const handleExportDocx = async (options: {
+    mode: string;
+    prompt: string;
+    result: string;
+  }) => {
+    if (!options.result.trim()) return;
+
+    setExportLoading(true);
+    try {
+      const res = await fetch('/api/export-docx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setUploadMessage(data.error || 'Word export failed');
+        setUploadError(true);
+        return;
+      }
+
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match?.[1] || `ai-${options.mode}-${Date.now()}.docx`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setUploadMessage('Word export failed');
+      setUploadError(true);
+    } finally {
+      setExportLoading(false);
     }
   };
 
@@ -227,6 +294,7 @@ export default function Home() {
         <h1 className={styles.title}>Document + AI Portal</h1>
         <p className={styles.meta}>
           Allowed extensions: .pdf, .doc, .docx, .xls, .xlsx, .csv, .txt, .ppt, .pptx, .md
+          {storageMode === 'local' && ' · Local storage (set BLOB_READ_WRITE_TOKEN for Vercel Blob)'}
         </p>
 
         {uploadMessage && (
@@ -239,10 +307,20 @@ export default function Home() {
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            role="button"
+            tabIndex={0}
           >
-            Drag and drop files here, or use file picker
+            Drag and drop files here, or click to choose files
           </div>
           <input
+            ref={fileInputRef}
             type="file"
             multiple
             onChange={handleFileChange}
@@ -351,6 +429,24 @@ export default function Home() {
             <h3>AI Result</h3>
             <p className={aiError ? styles.error : styles.ok}>Mode: {aiMode}</p>
             <pre className={styles.resultPre}>{aiResult}</pre>
+            {!aiError && (
+              <div className={styles.actionRow}>
+                <button
+                  type="button"
+                  className={styles.button}
+                  disabled={exportLoading}
+                  onClick={() =>
+                    handleExportDocx({
+                      mode: aiMode,
+                      prompt: aiPrompt,
+                      result: aiResult,
+                    })
+                  }
+                >
+                  {exportLoading ? 'Exporting...' : 'Download as Word (.docx)'}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -383,6 +479,21 @@ export default function Home() {
                     ) : (
                       <span>No file link</span>
                     )}
+                    {' · '}
+                    <button
+                      type="button"
+                      className={styles.linkButton}
+                      disabled={exportLoading}
+                      onClick={() =>
+                        handleExportDocx({
+                          mode: entry.mode,
+                          prompt: entry.prompt,
+                          result: entry.result,
+                        })
+                      }
+                    >
+                      Word
+                    </button>
                   </td>
                 </tr>
               ))
