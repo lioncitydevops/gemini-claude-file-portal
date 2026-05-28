@@ -4,7 +4,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { MAX_SCRAPE_CHARS, scrapeUrl } from '@/lib/scrape';
-import { storeFile } from '@/lib/storage';
+import { formatStorageError, storeFile } from '@/lib/storage';
 
 // Initialize Google AI with explicit API key
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || '');
@@ -141,7 +141,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       fileUrl = `/api/download?name=${encodeURIComponent(stored.name)}`;
     } catch (storageError) {
       console.error('Blob save warning:', storageError);
-      storageWarning = 'AI response generated, but saving output file failed.';
+      storageWarning = `AI response generated, but saving the output file failed: ${formatStorageError(storageError)}`;
     }
 
     const response = NextResponse.json({

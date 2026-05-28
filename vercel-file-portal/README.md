@@ -135,7 +135,8 @@ vercel-file-portal/
 
 ### File upload issues
 - Ensure Vercel Blob is connected in your project, or rely on local fallback storage (`.upload-storage/`) when `BLOB_READ_WRITE_TOKEN` is unset
-- If using a private Blob store, set `BLOB_STORE_ACCESS=private`
+- If using a **private** Blob store (Vercel default for new stores), set `BLOB_STORE_ACCESS=private` and use `@vercel/blob` v2.3+
+- If you see `Cannot use public access on a private store`, redeploy after setting `BLOB_STORE_ACCESS=private`
 - Check that file size is under the limit (4.5MB for Hobby plan)
 - Verify file extension is in the allowed list
 

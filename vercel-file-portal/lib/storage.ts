@@ -1,4 +1,4 @@
-import { del, list, put } from '@vercel/blob';
+import { del, get, list, put } from '@vercel/blob';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -14,11 +14,47 @@ function useBlobStorage(): boolean {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim());
 }
 
-function getBlobAccess(): 'public' {
-  if (process.env.BLOB_STORE_ACCESS?.toLowerCase() === 'private') {
-    return 'private' as unknown as 'public';
+type BlobAccess = 'public' | 'private';
+
+function getBlobAccess(): BlobAccess {
+  const configured = process.env.BLOB_STORE_ACCESS?.trim().toLowerCase();
+  if (configured === 'public' || configured === 'private') {
+    return configured;
   }
-  return 'public';
+  // New Vercel Blob stores default to private; prefer that unless explicitly public.
+  return 'private';
+}
+
+function blobAccessMismatch(message: string): 'public' | 'private' | null {
+  const lower = message.toLowerCase();
+  if (lower.includes('private store') && lower.includes('public access')) {
+    return 'private';
+  }
+  if (lower.includes('public store') && lower.includes('private access')) {
+    return 'public';
+  }
+  return null;
+}
+
+async function putBlob(name: string, data: Buffer | Blob | string) {
+  let access = getBlobAccess();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await put(name, data, {
+        access,
+        addRandomSuffix: false,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallback = blobAccessMismatch(message);
+      if (fallback && fallback !== access && attempt === 0) {
+        access = fallback;
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('Blob upload failed.');
 }
 
 export function safeFilename(rawName: string): string {
@@ -45,10 +81,7 @@ async function localPath(name: string): Promise<string> {
 
 export async function storeFile(name: string, data: Buffer | Blob | string): Promise<StoredFile> {
   if (useBlobStorage()) {
-    const blob = await put(name, data, {
-      access: getBlobAccess(),
-      addRandomSuffix: false,
-    });
+    const blob = await putBlob(name, data);
     const size =
       typeof data === 'string'
         ? Buffer.byteLength(data, 'utf-8')
@@ -117,26 +150,29 @@ export async function deleteStoredFile(name: string): Promise<void> {
 
 export async function readStoredFile(name: string): Promise<{ data: Buffer; contentType: string }> {
   if (useBlobStorage()) {
-    const { blobs } = await list({
-      prefix: name,
-      limit: 1,
-    });
-    const blob = blobs.find((item) => item.pathname === name);
-    if (!blob) {
-      throw new Error('File not found.');
+    const access = getBlobAccess();
+    try {
+      const response = await get(name, { access });
+      if (!response || response.statusCode === 304 || !response.stream) {
+        throw new Error('File not found.');
+      }
+      const data = Buffer.from(await new Response(response.stream).arrayBuffer());
+      const contentType = response.blob.contentType || guessContentType(name);
+      return { data, contentType };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallback = blobAccessMismatch(message);
+      if (fallback && fallback !== access) {
+        const response = await get(name, { access: fallback });
+        if (!response || response.statusCode === 304 || !response.stream) {
+          throw new Error('File not found.');
+        }
+        const data = Buffer.from(await new Response(response.stream).arrayBuffer());
+        const contentType = response.blob.contentType || guessContentType(name);
+        return { data, contentType };
+      }
+      throw error;
     }
-
-    const token = process.env.BLOB_READ_WRITE_TOKEN!;
-    const upstream = await fetch(blob.url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!upstream.ok) {
-      throw new Error('Unable to fetch file from storage.');
-    }
-
-    const data = Buffer.from(await upstream.arrayBuffer());
-    const contentType = upstream.headers.get('content-type') || guessContentType(name);
-    return { data, contentType };
   }
 
   const filePath = await localPath(name);
@@ -164,4 +200,16 @@ function guessContentType(name: string): string {
 
 export function storageMode(): 'blob' | 'local' {
   return useBlobStorage() ? 'blob' : 'local';
+}
+
+export function formatStorageError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Storage operation failed.';
+  const lower = message.toLowerCase();
+  if (lower.includes('private store') && lower.includes('public access')) {
+    return 'Blob store is private; set BLOB_STORE_ACCESS=private and redeploy.';
+  }
+  if (lower.includes('public store') && lower.includes('private access')) {
+    return 'Blob store is public; set BLOB_STORE_ACCESS=public and redeploy.';
+  }
+  return message;
 }

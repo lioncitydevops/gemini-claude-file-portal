@@ -42,7 +42,19 @@ export default function Home() {
   const [scrapeError, setScrapeError] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [storageMode, setStorageMode] = useState<'blob' | 'local' | null>(null);
+  const [storageWarning, setStorageWarning] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const friendlyError = (raw: string): string => {
+    const lower = raw.toLowerCase();
+    if (lower.includes('private store') && lower.includes('public access')) {
+      return 'Blob storage is private but the app was using public access. Set BLOB_STORE_ACCESS=private on Vercel and redeploy.';
+    }
+    if (lower.includes('public store') && lower.includes('private access')) {
+      return 'Blob storage is public but the app was using private access. Set BLOB_STORE_ACCESS=public on Vercel and redeploy.';
+    }
+    return raw;
+  };
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -109,7 +121,7 @@ export default function Home() {
         resetFileInput();
         fetchFiles();
       } else {
-        setUploadMessage(data.error || data.hint || 'Upload failed');
+        setUploadMessage(friendlyError(data.error || data.hint || 'Upload failed'));
         setUploadError(true);
       }
     } catch {
@@ -180,6 +192,7 @@ export default function Home() {
 
     setAiLoading(true);
     setAiResult('');
+    setStorageWarning('');
     setAiError(false);
 
     try {
@@ -192,10 +205,8 @@ export default function Home() {
       const data = await res.json();
 
       if (res.ok) {
-        const finalResult = data.storageWarning
-          ? `${data.result}\n\n[Storage warning] ${data.storageWarning}`
-          : data.result;
-        setAiResult(finalResult);
+        setAiResult(data.result);
+        setStorageWarning(data.storageWarning || '');
         setAiError(false);
 
         // Add to history
@@ -204,13 +215,14 @@ export default function Home() {
           mode: data.mode,
           promptPreview: aiPrompt.length > 80 ? aiPrompt.slice(0, 80) + '...' : aiPrompt,
           prompt: aiPrompt,
-          result: finalResult,
+          result: data.result,
           fileName: data.fileName,
           fileUrl: data.fileUrl,
         };
         setHistory(prev => [...prev, newEntry].slice(-20));
       } else {
-        setAiResult(data.error || 'AI request failed');
+        setAiResult(friendlyError(data.error || 'AI request failed'));
+        setStorageWarning('');
         setAiError(true);
       }
     } catch (err) {
@@ -428,6 +440,9 @@ export default function Home() {
           <div className={styles.aiResult}>
             <h3>AI Result</h3>
             <p className={aiError ? styles.error : styles.ok}>Mode: {aiMode}</p>
+            {storageWarning && (
+              <p className={styles.error}>{friendlyError(storageWarning)}</p>
+            )}
             <pre className={styles.resultPre}>{aiResult}</pre>
             {!aiError && (
               <div className={styles.actionRow}>

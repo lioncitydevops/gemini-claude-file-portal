@@ -12,7 +12,7 @@
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@vercel/blob": "^0.23.0",
+    "@vercel/blob": "^2.4.0",
     "ai": "^4.0.0",
     "@google/generative-ai": "^0.21.0",
     "@ai-sdk/anthropic": "^1.0.0",

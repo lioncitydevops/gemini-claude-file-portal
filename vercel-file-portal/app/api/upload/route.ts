@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { safeFilename, storageMode, storeFile } from '@/lib/storage';
+import { formatStorageError, safeFilename, storageMode, storeFile } from '@/lib/storage';
 
 const ALLOWED_EXTENSIONS = new Set([
   '.pdf', '.doc', '.docx', '.xls', '.xlsx',
@@ -56,7 +56,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
   } catch (error) {
     console.error('Upload error:', error);
-    const message = error instanceof Error ? error.message : 'Upload failed.';
+    const message = formatStorageError(error);
     return NextResponse.json(
       {
         error: message,
