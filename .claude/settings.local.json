@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:scrapling.readthedocs.io)",
+      "PowerShell(gh auth *)",
+      "PowerShell(vercel *)",
+      "Bash(vercel ls *)",
+      "Bash(vercel inspect *)",
+      "WebFetch(domain:vercel-file-portal.vercel.app)",
+      "PowerShell(Get-ChildItem *)",
+      "Bash(vercel --prod)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh run *)"
+    ]
+  }
+}
