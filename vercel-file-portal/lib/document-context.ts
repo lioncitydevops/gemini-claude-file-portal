@@ -4,6 +4,23 @@ import { readStoredFile } from '@/lib/storage';
 export const MAX_CHARS_PER_FILE = 30_000;
 export const MAX_TOTAL_CONTEXT_CHARS = 80_000;
 
+export interface ContextLimits {
+  maxCharsPerFile: number;
+  maxTotalChars: number;
+  attachPdfs: boolean;
+}
+
+export function getContextLimits(mode: string): ContextLimits {
+  if (mode === 'debate' || mode === 'orchestrate') {
+    return { maxCharsPerFile: 12_000, maxTotalChars: 24_000, attachPdfs: false };
+  }
+  return {
+    maxCharsPerFile: MAX_CHARS_PER_FILE,
+    maxTotalChars: MAX_TOTAL_CONTEXT_CHARS,
+    attachPdfs: true,
+  };
+}
+
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.json']);
 
 export interface DocumentContextResult {
@@ -16,7 +33,12 @@ export interface DocumentContextResult {
 }
 
 export async function buildDocumentContext(
-  fileNames: string[]
+  fileNames: string[],
+  limits: ContextLimits = {
+    maxCharsPerFile: MAX_CHARS_PER_FILE,
+    maxTotalChars: MAX_TOTAL_CONTEXT_CHARS,
+    attachPdfs: true,
+  }
 ): Promise<DocumentContextResult> {
   const skipped: string[] = [];
   const included: { name: string; chars: number }[] = [];
@@ -24,7 +46,7 @@ export async function buildDocumentContext(
   let totalChars = 0;
 
   for (const name of fileNames) {
-    if (totalChars >= MAX_TOTAL_CONTEXT_CHARS) {
+    if (totalChars >= limits.maxTotalChars) {
       skipped.push(`${name} (context budget exceeded)`);
       continue;
     }
@@ -32,8 +54,8 @@ export async function buildDocumentContext(
     try {
       const { data, contentType } = await readStoredFile(name);
       const ext = path.extname(name).toLowerCase();
-      const remaining = MAX_TOTAL_CONTEXT_CHARS - totalChars;
-      const perFileLimit = Math.min(MAX_CHARS_PER_FILE, remaining);
+      const remaining = limits.maxTotalChars - totalChars;
+      const perFileLimit = Math.min(limits.maxCharsPerFile, remaining);
 
       const text = await extractText(name, data, ext, contentType);
       const isPdf = ext === '.pdf' || contentType === 'application/pdf';

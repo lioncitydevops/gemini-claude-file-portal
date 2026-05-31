@@ -6,6 +6,7 @@ import { z } from 'zod';
 import {
   buildDocumentContext,
   composePromptWithContext,
+  getContextLimits,
   loadPdfAttachments,
 } from '@/lib/document-context';
 import { MAX_SCRAPE_CHARS, scrapeUrl } from '@/lib/scrape';
@@ -45,7 +46,9 @@ function systemInstruction(hasDocuments: boolean): string {
 }
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
+
+const MULTI_STEP_MAX_OUTPUT = 2048;
 
 export type AIMode = 'gemini' | 'claude' | 'debate' | 'orchestrate';
 
@@ -139,7 +142,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     let effectivePrompt: string;
     let contextMeta: AIContextMeta;
     try {
-      ({ effectivePrompt, contextMeta } = await resolvePromptWithDocuments(prompt, contextFiles));
+      ({ effectivePrompt, contextMeta } = await resolvePromptWithDocuments(
+        prompt,
+        contextFiles,
+        mode
+      ));
     } catch (docError) {
       console.error('Document context error:', docError);
       return NextResponse.json(
@@ -175,16 +182,21 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     switch (mode) {
       case 'gemini':
-        result = await runGemini(effectivePrompt, contextFiles, contextMeta, true, contextFiles.length > 0);
+        result = await runGemini(effectivePrompt, {
+          contextFiles,
+          contextMeta,
+          useTools: true,
+          hasDocuments: contextFiles.length > 0,
+        });
         break;
       case 'claude':
         result = await runClaude(effectivePrompt, true, contextFiles.length > 0);
         break;
       case 'debate':
-        result = await runDebate(effectivePrompt, contextFiles, contextMeta);
+        result = await runDebate(effectivePrompt, contextFiles.length > 0);
         break;
       case 'orchestrate':
-        result = await runOrchestrate(effectivePrompt, contextFiles, contextMeta);
+        result = await runOrchestrate(effectivePrompt, contextFiles.length > 0);
         break;
       default: {
         const _exhaustiveCheck: never = mode;
@@ -260,7 +272,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 
 async function resolvePromptWithDocuments(
   prompt: string,
-  contextFiles: string[]
+  contextFiles: string[],
+  mode: AIMode
 ): Promise<{ effectivePrompt: string; contextMeta: AIContextMeta }> {
   if (contextFiles.length === 0) {
     return {
@@ -269,8 +282,14 @@ async function resolvePromptWithDocuments(
     };
   }
 
-  const { contextBlock, skipped, included } = await buildDocumentContext(contextFiles);
-  const pdfAttachments = await loadPdfAttachments(contextFiles);
+  const limits = getContextLimits(mode);
+  const { contextBlock, skipped, included } = await buildDocumentContext(
+    contextFiles,
+    limits
+  );
+  const pdfAttachments = limits.attachPdfs
+    ? await loadPdfAttachments(contextFiles)
+    : [];
 
   const effectivePrompt = composePromptWithContext(prompt, contextBlock);
   const pdfIncluded = pdfAttachments.map((p) => ({
@@ -291,15 +310,30 @@ async function resolvePromptWithDocuments(
   };
 }
 
+interface GeminiRunOptions {
+  contextFiles?: string[];
+  contextMeta?: AIContextMeta;
+  useTools?: boolean;
+  hasDocuments?: boolean;
+  attachPdfs?: boolean;
+  maxOutputTokens?: number;
+}
+
 async function runGemini(
   prompt: string,
-  contextFiles: string[] = [],
-  contextMeta?: AIContextMeta,
-  useTools = true,
-  hasDocuments = false
+  options: GeminiRunOptions = {}
 ): Promise<string> {
+  const {
+    contextFiles = [],
+    contextMeta,
+    useTools = true,
+    hasDocuments = false,
+    attachPdfs = true,
+    maxOutputTokens,
+  } = options;
+
   const pdfAttachments =
-    contextMeta && contextMeta.pdfCount > 0
+    attachPdfs && contextMeta && contextMeta.pdfCount > 0
       ? await loadPdfAttachments(
           contextFiles.filter((n) => n.toLowerCase().endsWith('.pdf'))
         )
@@ -308,6 +342,7 @@ async function runGemini(
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
     systemInstruction: useTools ? systemInstruction(hasDocuments) : undefined,
+    generationConfig: maxOutputTokens ? { maxOutputTokens } : undefined,
     tools: useTools
       ? [
           {
@@ -368,11 +403,17 @@ async function runGemini(
   return result.response.text();
 }
 
-async function runClaude(prompt: string, useTools = true, hasDocuments = false): Promise<string> {
+async function runClaude(
+  prompt: string,
+  useTools = true,
+  hasDocuments = false,
+  maxTokens?: number
+): Promise<string> {
   const { text } = await generateText({
     model: anthropic('claude-sonnet-4-6'),
     system: useTools ? systemInstruction(hasDocuments) : hasDocuments ? systemInstruction(true) : undefined,
     prompt,
+    maxTokens,
     ...(useTools
       ? {
           tools: {
@@ -393,53 +434,62 @@ async function runClaude(prompt: string, useTools = true, hasDocuments = false):
 }
 
 async function runDebate(
-  prompt: string,
-  contextFiles: string[] = [],
-  contextMeta?: AIContextMeta
+  effectivePrompt: string,
+  hasDocuments: boolean
 ): Promise<string> {
   const geminiText = await runGemini(
-    `Take a position and argue for it convincingly: ${prompt}`,
-    contextFiles,
-    contextMeta,
-    false,
-    contextFiles.length > 0
+    `Take a position and argue for it convincingly.\n\n${effectivePrompt}`,
+    {
+      useTools: false,
+      hasDocuments,
+      attachPdfs: false,
+      maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
+    }
   );
   const claudeText = await runClaude(
-    `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\nNow argue the opposing side or provide a strong counter-argument to Gemini's position. Base your answer on the uploaded documents when provided.\n\nOriginal task:\n${prompt}`,
+    `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\n` +
+      `Now argue the opposing side or provide a strong counter-argument to Gemini's position. ` +
+      `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
     false,
-    contextFiles.length > 0
+    hasDocuments,
+    MULTI_STEP_MAX_OUTPUT
   );
   return `**Gemini:**\n${geminiText}\n\n**Claude:**\n${claudeText}`;
 }
 
 async function runOrchestrate(
-  prompt: string,
-  contextFiles: string[] = [],
-  contextMeta?: AIContextMeta
+  effectivePrompt: string,
+  hasDocuments: boolean
 ): Promise<string> {
   const planText = await runGemini(
-    `Create a practical step-by-step plan for: ${prompt}`,
-    contextFiles,
-    contextMeta,
-    false,
-    contextFiles.length > 0
+    `Create a practical step-by-step plan.\n\n${effectivePrompt}`,
+    {
+      useTools: false,
+      hasDocuments,
+      attachPdfs: false,
+      maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
+    }
   );
   const draft = await runClaude(
-    `Task: ${prompt}\n\nPlan:\n${planText}\n\nExecute the plan and produce a thorough response to the task.`,
+    `Execute the plan and produce a thorough response.\n\nPlan:\n${planText}\n\n${effectivePrompt}`,
     false,
-    contextFiles.length > 0
+    hasDocuments,
+    MULTI_STEP_MAX_OUTPUT
   );
   const reviewText = await runGemini(
-    `Task: ${prompt}\n\nDraft response:\n${draft}\n\nReview this draft and suggest concrete improvements to better address the task.`,
-    contextFiles,
-    contextMeta,
-    false,
-    contextFiles.length > 0
+    `Review this draft and suggest concrete improvements.\n\nDraft:\n${draft}\n\n${effectivePrompt}`,
+    {
+      useTools: false,
+      hasDocuments,
+      attachPdfs: false,
+      maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
+    }
   );
   const final = await runClaude(
-    `Task: ${prompt}\n\nReview feedback:\n${reviewText}\n\nWrite the final polished response to the task, incorporating the feedback.`,
+    `Write the final polished response, incorporating the review feedback.\n\nReview:\n${reviewText}\n\n${effectivePrompt}`,
     false,
-    contextFiles.length > 0
+    hasDocuments,
+    MULTI_STEP_MAX_OUTPUT
   );
   return `**Plan (Gemini):**\n${planText}\n\n**Draft (Claude):**\n${draft}\n\n**Review (Gemini):**\n${reviewText}\n\n**Final (Claude):**\n${final}`;
 }

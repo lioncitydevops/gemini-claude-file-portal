@@ -234,6 +234,11 @@ export default function Home() {
     setDocumentNotice('');
     setAiError(false);
 
+    const aiTimeoutMs =
+      aiMode === 'debate' || aiMode === 'orchestrate' ? 300_000 : 120_000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), aiTimeoutMs);
+
     try {
       const res = await fetch('/api/ai', {
         method: 'POST',
@@ -243,6 +248,7 @@ export default function Home() {
           prompt: aiPrompt,
           contextFiles: filesForAi,
         }),
+        signal: controller.signal,
       });
 
       const data = await readApiJson<{
@@ -286,9 +292,17 @@ export default function Home() {
         setAiError(true);
       }
     } catch (err) {
-      setAiResult(err instanceof Error ? err.message : 'AI request failed');
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      setAiResult(
+        aborted
+          ? 'Request timed out in the browser. Debate/Orchestrate can take several minutes — try again or use Gemini/Claude mode.'
+          : err instanceof Error
+            ? err.message
+            : 'AI request failed'
+      );
       setAiError(true);
     } finally {
+      clearTimeout(timeoutId);
       setAiLoading(false);
     }
   };
