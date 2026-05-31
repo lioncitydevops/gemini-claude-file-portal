@@ -3,8 +3,13 @@ import { generateText, tool } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import {
+  buildDocumentContext,
+  composePromptWithContext,
+  loadPdfAttachments,
+} from '@/lib/document-context';
 import { MAX_SCRAPE_CHARS, scrapeUrl } from '@/lib/scrape';
-import { formatStorageError, storeFile } from '@/lib/storage';
+import { formatStorageError, listStoredFiles, storeFile } from '@/lib/storage';
 
 // Initialize Google AI with explicit API key
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || '');
@@ -24,18 +29,37 @@ async function scrapeUrlForAI(url: string, selector?: string): Promise<string> {
 const SCRAPE_TOOL_DESCRIPTION =
   'Fetch and extract text content from a web page. Use this to retrieve current, real-world information from the web.';
 
-const SYSTEM_INSTRUCTION =
+const SYSTEM_INSTRUCTION_BASE =
   'You have access to a web scraping tool that can fetch content from any public URL. ' +
   'When answering questions that would benefit from current or real-world information — ' +
   'such as news, events, prices, documentation, product details, or any live web content — ' +
   'proactively decide which reputable websites to scrape based on the topic. ' +
   'Do NOT wait for the user to provide URLs. Choose appropriate sources yourself and scrape them to give accurate, up-to-date answers.';
 
+const DOCUMENT_SYSTEM_ADDENDUM =
+  ' The user has attached uploaded document(s). Treat the UPLOADED DOCUMENTS section in the prompt as authoritative source material. ' +
+  'Answer using those documents first; cite which document you are drawing from when relevant.';
+
+function systemInstruction(hasDocuments: boolean): string {
+  return hasDocuments ? SYSTEM_INSTRUCTION_BASE + DOCUMENT_SYSTEM_ADDENDUM : SYSTEM_INSTRUCTION_BASE;
+}
+
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
 export type AIMode = 'gemini' | 'claude' | 'debate' | 'orchestrate';
 
 interface AIRequest {
   mode: AIMode;
   prompt: string;
+  /** Stored file names to include as document context */
+  contextFiles?: string[];
+}
+
+interface AIContextMeta {
+  included: { name: string; chars: number }[];
+  skipped: string[];
+  pdfCount: number;
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -69,6 +93,17 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
 
     const { mode, prompt } = parsedBody;
+    let contextFiles = Array.isArray(parsedBody.contextFiles)
+      ? parsedBody.contextFiles
+          .map((n) => (typeof n === 'string' ? n.trim() : ''))
+          .filter((n) => n.length > 0)
+      : [];
+
+    // If the client sent no selection, include all uploaded files so documents are never silently ignored
+    if (contextFiles.length === 0) {
+      const stored = await listStoredFiles();
+      contextFiles = stored.map((f) => f.name);
+    }
     if (!mode || !['gemini', 'claude', 'debate', 'orchestrate'].includes(mode)) {
       return NextResponse.json(
         { error: 'Unsupported mode.', requestId },
@@ -101,20 +136,55 @@ export async function POST(request: Request): Promise<NextResponse> {
       );
     }
 
+    let effectivePrompt: string;
+    let contextMeta: AIContextMeta;
+    try {
+      ({ effectivePrompt, contextMeta } = await resolvePromptWithDocuments(prompt, contextFiles));
+    } catch (docError) {
+      console.error('Document context error:', docError);
+      return NextResponse.json(
+        {
+          error:
+            'Failed to read uploaded documents. Try a smaller PDF, DOCX, or TXT file.',
+          requestId,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (
+      contextFiles.length > 0 &&
+      contextMeta.included.length === 0 &&
+      contextMeta.skipped.length > 0 &&
+      contextMeta.pdfCount === 0
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'Could not read any selected documents. ' +
+            contextMeta.skipped.join('; ') +
+            ' Ensure files uploaded successfully and are PDF, DOCX, or text formats.',
+          requestId,
+          documentsSkipped: contextMeta.skipped,
+        },
+        { status: 400 }
+      );
+    }
+
     let result: string;
 
     switch (mode) {
       case 'gemini':
-        result = await runGemini(prompt);
+        result = await runGemini(effectivePrompt, contextFiles, contextMeta, true, contextFiles.length > 0);
         break;
       case 'claude':
-        result = await runClaude(prompt);
+        result = await runClaude(effectivePrompt, true, contextFiles.length > 0);
         break;
       case 'debate':
-        result = await runDebate(prompt);
+        result = await runDebate(effectivePrompt, contextFiles, contextMeta);
         break;
       case 'orchestrate':
-        result = await runOrchestrate(prompt);
+        result = await runOrchestrate(effectivePrompt, contextFiles, contextMeta);
         break;
       default: {
         const _exhaustiveCheck: never = mode;
@@ -151,6 +221,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       fileUrl,
       storageWarning,
       requestId,
+      documentsIncluded: contextMeta.included,
+      documentsSkipped: contextMeta.skipped,
     });
     console.info(
       JSON.stringify({
@@ -186,10 +258,56 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 }
 
-async function runGemini(prompt: string, useTools = true): Promise<string> {
+async function resolvePromptWithDocuments(
+  prompt: string,
+  contextFiles: string[]
+): Promise<{ effectivePrompt: string; contextMeta: AIContextMeta }> {
+  if (contextFiles.length === 0) {
+    return {
+      effectivePrompt: prompt,
+      contextMeta: { included: [], skipped: [], pdfCount: 0 },
+    };
+  }
+
+  const { contextBlock, skipped, included } = await buildDocumentContext(contextFiles);
+  const pdfAttachments = await loadPdfAttachments(contextFiles);
+
+  const effectivePrompt = composePromptWithContext(prompt, contextBlock);
+  const pdfIncluded = pdfAttachments.map((p) => ({
+    name: p.name,
+    chars: 0,
+  }));
+
+  return {
+    effectivePrompt,
+    contextMeta: {
+      included: [
+        ...included,
+        ...pdfIncluded.filter((p) => !included.some((i) => i.name === p.name)),
+      ],
+      skipped,
+      pdfCount: pdfAttachments.length,
+    },
+  };
+}
+
+async function runGemini(
+  prompt: string,
+  contextFiles: string[] = [],
+  contextMeta?: AIContextMeta,
+  useTools = true,
+  hasDocuments = false
+): Promise<string> {
+  const pdfAttachments =
+    contextMeta && contextMeta.pdfCount > 0
+      ? await loadPdfAttachments(
+          contextFiles.filter((n) => n.toLowerCase().endsWith('.pdf'))
+        )
+      : [];
+
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: useTools ? SYSTEM_INSTRUCTION : undefined,
+    systemInstruction: useTools ? systemInstruction(hasDocuments) : undefined,
     tools: useTools
       ? [
           {
@@ -212,13 +330,23 @@ async function runGemini(prompt: string, useTools = true): Promise<string> {
       : undefined,
   });
 
+  const initialParts: string | Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> =
+    pdfAttachments.length > 0
+      ? [
+          { text: prompt },
+          ...pdfAttachments.map((pdf) => ({
+            inlineData: { mimeType: 'application/pdf', data: pdf.base64 },
+          })),
+        ]
+      : prompt;
+
   if (!useTools) {
-    const result = await model.generateContent(prompt);
+    const result = await model.generateContent(initialParts);
     return result.response.text();
   }
 
   const chat = model.startChat();
-  let result = await chat.sendMessage(prompt);
+  let result = await chat.sendMessage(initialParts);
   let calls = result.response.functionCalls();
 
   while (calls && calls.length > 0) {
@@ -240,10 +368,10 @@ async function runGemini(prompt: string, useTools = true): Promise<string> {
   return result.response.text();
 }
 
-async function runClaude(prompt: string, useTools = true): Promise<string> {
+async function runClaude(prompt: string, useTools = true, hasDocuments = false): Promise<string> {
   const { text } = await generateText({
     model: anthropic('claude-sonnet-4-6'),
-    system: useTools ? SYSTEM_INSTRUCTION : undefined,
+    system: useTools ? systemInstruction(hasDocuments) : hasDocuments ? systemInstruction(true) : undefined,
     prompt,
     ...(useTools
       ? {
@@ -264,31 +392,54 @@ async function runClaude(prompt: string, useTools = true): Promise<string> {
   return text;
 }
 
-async function runDebate(prompt: string): Promise<string> {
-  const geminiText = await runGemini(`Take a position and argue for it convincingly: ${prompt}`, false);
+async function runDebate(
+  prompt: string,
+  contextFiles: string[] = [],
+  contextMeta?: AIContextMeta
+): Promise<string> {
+  const geminiText = await runGemini(
+    `Take a position and argue for it convincingly: ${prompt}`,
+    contextFiles,
+    contextMeta,
+    false,
+    contextFiles.length > 0
+  );
   const claudeText = await runClaude(
-    `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\nNow argue the opposing side or provide a strong counter-argument to Gemini's position on: ${prompt}`,
-    false
+    `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\nNow argue the opposing side or provide a strong counter-argument to Gemini's position. Base your answer on the uploaded documents when provided.\n\nOriginal task:\n${prompt}`,
+    false,
+    contextFiles.length > 0
   );
   return `**Gemini:**\n${geminiText}\n\n**Claude:**\n${claudeText}`;
 }
 
-async function runOrchestrate(prompt: string): Promise<string> {
+async function runOrchestrate(
+  prompt: string,
+  contextFiles: string[] = [],
+  contextMeta?: AIContextMeta
+): Promise<string> {
   const planText = await runGemini(
     `Create a practical step-by-step plan for: ${prompt}`,
-    false
+    contextFiles,
+    contextMeta,
+    false,
+    contextFiles.length > 0
   );
   const draft = await runClaude(
     `Task: ${prompt}\n\nPlan:\n${planText}\n\nExecute the plan and produce a thorough response to the task.`,
-    false
+    false,
+    contextFiles.length > 0
   );
   const reviewText = await runGemini(
     `Task: ${prompt}\n\nDraft response:\n${draft}\n\nReview this draft and suggest concrete improvements to better address the task.`,
-    false
+    contextFiles,
+    contextMeta,
+    false,
+    contextFiles.length > 0
   );
   const final = await runClaude(
     `Task: ${prompt}\n\nReview feedback:\n${reviewText}\n\nWrite the final polished response to the task, incorporating the feedback.`,
-    false
+    false,
+    contextFiles.length > 0
   );
   return `**Plan (Gemini):**\n${planText}\n\n**Draft (Claude):**\n${draft}\n\n**Review (Gemini):**\n${reviewText}\n\n**Final (Claude):**\n${final}`;
 }

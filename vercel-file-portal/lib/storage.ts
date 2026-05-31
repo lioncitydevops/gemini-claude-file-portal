@@ -8,7 +8,13 @@ export interface StoredFile {
   uploadedAt: string;
 }
 
-const LOCAL_STORAGE_DIR = path.join(process.cwd(), '.upload-storage');
+function getLocalStorageDir(): string {
+  // Vercel serverless filesystem is read-only except /tmp
+  if (process.env.VERCEL) {
+    return path.join('/tmp', 'upload-storage');
+  }
+  return path.join(process.cwd(), '.upload-storage');
+}
 
 function useBlobStorage(): boolean {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim());
@@ -66,17 +72,25 @@ export function isUserUpload(name: string): boolean {
   return !/^ai-[a-z]+-.+\.md$/i.test(name);
 }
 
-async function ensureLocalDir(): Promise<void> {
-  await fs.mkdir(LOCAL_STORAGE_DIR, { recursive: true });
+async function ensureLocalDir(): Promise<string> {
+  const dir = getLocalStorageDir();
+  await fs.mkdir(dir, { recursive: true });
+  return dir;
 }
 
 async function localPath(name: string): Promise<string> {
-  await ensureLocalDir();
-  const resolved = path.resolve(LOCAL_STORAGE_DIR, name);
-  if (!resolved.startsWith(path.resolve(LOCAL_STORAGE_DIR))) {
+  const dir = await ensureLocalDir();
+  const resolved = path.resolve(dir, name);
+  if (!resolved.startsWith(path.resolve(dir))) {
     throw new Error('Invalid file path.');
   }
   return resolved;
+}
+
+export async function toStorageBuffer(data: Buffer | Blob | string): Promise<Buffer> {
+  if (typeof data === 'string') return Buffer.from(data, 'utf-8');
+  if (Buffer.isBuffer(data)) return data;
+  return Buffer.from(await data.arrayBuffer());
 }
 
 export async function storeFile(name: string, data: Buffer | Blob | string): Promise<StoredFile> {
@@ -89,19 +103,14 @@ export async function storeFile(name: string, data: Buffer | Blob | string): Pro
           ? data.size
           : data.length;
     return {
-      name: blob.pathname,
+      name,
       size,
       uploadedAt: new Date().toISOString(),
     };
   }
 
   const filePath = await localPath(name);
-  const buffer =
-    typeof data === 'string'
-      ? Buffer.from(data, 'utf-8')
-      : data instanceof Blob
-        ? Buffer.from(await data.arrayBuffer())
-        : data;
+  const buffer = await toStorageBuffer(data);
   await fs.writeFile(filePath, buffer);
   const stat = await fs.stat(filePath);
   return {
@@ -117,18 +126,18 @@ export async function listStoredFiles(): Promise<StoredFile[]> {
     return blobs
       .filter((blob) => isUserUpload(blob.pathname))
       .map((blob) => ({
-        name: blob.pathname,
+        name: path.basename(blob.pathname),
         size: blob.size,
         uploadedAt: blob.uploadedAt.toISOString(),
       }));
   }
 
-  await ensureLocalDir();
-  const entries = await fs.readdir(LOCAL_STORAGE_DIR, { withFileTypes: true });
+  const dir = await ensureLocalDir();
+  const entries = await fs.readdir(dir, { withFileTypes: true });
   const files: StoredFile[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !isUserUpload(entry.name)) continue;
-    const stat = await fs.stat(path.join(LOCAL_STORAGE_DIR, entry.name));
+    const stat = await fs.stat(path.join(dir, entry.name));
     files.push({
       name: entry.name,
       size: stat.size,
@@ -140,7 +149,8 @@ export async function listStoredFiles(): Promise<StoredFile[]> {
 
 export async function deleteStoredFile(name: string): Promise<void> {
   if (useBlobStorage()) {
-    await del(name);
+    const pathname = await resolveBlobPathname(name).catch(() => name);
+    await del(pathname);
     return;
   }
 
@@ -148,28 +158,55 @@ export async function deleteStoredFile(name: string): Promise<void> {
   await fs.unlink(filePath);
 }
 
+async function fetchBlobByPathname(
+  pathname: string,
+  access: BlobAccess,
+  contentTypeFallback: string
+): Promise<{ data: Buffer; contentType: string }> {
+  const response = await get(pathname, { access });
+  if (!response || response.statusCode === 304 || !response.stream) {
+    throw new Error('File not found.');
+  }
+  const data = Buffer.from(await new Response(response.stream).arrayBuffer());
+  const contentType = response.blob.contentType || contentTypeFallback;
+  return { data, contentType };
+}
+
+async function resolveBlobPathname(name: string): Promise<string> {
+  const access = getBlobAccess();
+  try {
+    const probe = await get(name, { access });
+    if (probe?.stream) return name;
+  } catch {
+    // fall through to list lookup
+  }
+
+  const base = path.basename(name);
+  const { blobs } = await list({ prefix: base, limit: 20 });
+  const match = blobs.find(
+    (b) =>
+      b.pathname === name ||
+      b.pathname === base ||
+      b.pathname.endsWith(`/${base}`) ||
+      path.basename(b.pathname) === base
+  );
+  if (match) return match.pathname;
+  throw new Error('File not found.');
+}
+
 export async function readStoredFile(name: string): Promise<{ data: Buffer; contentType: string }> {
   if (useBlobStorage()) {
-    const access = getBlobAccess();
+    let access = getBlobAccess();
+    const pathname = await resolveBlobPathname(name);
+
     try {
-      const response = await get(name, { access });
-      if (!response || response.statusCode === 304 || !response.stream) {
-        throw new Error('File not found.');
-      }
-      const data = Buffer.from(await new Response(response.stream).arrayBuffer());
-      const contentType = response.blob.contentType || guessContentType(name);
-      return { data, contentType };
+      return await fetchBlobByPathname(pathname, access, guessContentType(name));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const fallback = blobAccessMismatch(message);
-      if (fallback && fallback !== access) {
-        const response = await get(name, { access: fallback });
-        if (!response || response.statusCode === 304 || !response.stream) {
-          throw new Error('File not found.');
-        }
-        const data = Buffer.from(await new Response(response.stream).arrayBuffer());
-        const contentType = response.blob.contentType || guessContentType(name);
-        return { data, contentType };
+      const fallbackAccess = blobAccessMismatch(message);
+      if (fallbackAccess && fallbackAccess !== access) {
+        access = fallbackAccess;
+        return await fetchBlobByPathname(pathname, access, guessContentType(name));
       }
       throw error;
     }

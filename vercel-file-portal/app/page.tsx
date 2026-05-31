@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { readApiJson } from '@/lib/parse-api-response';
 import styles from './page.module.css';
 
 interface FileItem {
@@ -28,6 +29,7 @@ export default function Home() {
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [uploadMessage, setUploadMessage] = useState('');
   const [uploadError, setUploadError] = useState(false);
+  const [uploadLoading, setUploadLoading] = useState(false);
   const [aiMode, setAiMode] = useState<AIMode>('debate');
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiResult, setAiResult] = useState('');
@@ -43,6 +45,8 @@ export default function Home() {
   const [exportLoading, setExportLoading] = useState(false);
   const [storageMode, setStorageMode] = useState<'blob' | 'local' | null>(null);
   const [storageWarning, setStorageWarning] = useState('');
+  const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const [documentNotice, setDocumentNotice] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const friendlyError = (raw: string): string => {
@@ -59,8 +63,15 @@ export default function Home() {
   const fetchFiles = useCallback(async () => {
     try {
       const res = await fetch('/api/files');
-      const data = await res.json();
-      setFiles(data.files || []);
+      const data = await readApiJson<{ files?: FileItem[]; storage?: string; error?: string }>(res);
+      const list: FileItem[] = data.files || [];
+      setFiles(list);
+      setContextFiles((prev) => {
+        const names = new Set(list.map((f) => f.name));
+        const kept = prev.filter((n) => names.has(n));
+        if (kept.length > 0) return kept;
+        return list.map((f) => f.name);
+      });
       if (data.storage === 'blob' || data.storage === 'local') {
         setStorageMode(data.storage);
       }
@@ -105,28 +116,52 @@ export default function Home() {
       formData.append('file', file);
     }
 
+    setUploadLoading(true);
+    setUploadMessage('');
+    setUploadError(false);
+
     try {
       const res = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
-      const data = await res.json();
+      const data = await readApiJson<{
+        message?: string;
+        error?: string;
+        hint?: string;
+        uploaded?: string[];
+        blocked?: string[];
+        storage?: string;
+      }>(res);
 
       if (res.ok) {
-        setUploadMessage(data.message);
-        setUploadError(data.blocked?.length > 0 && data.uploaded?.length === 0);
+        setUploadMessage(data.message || 'Upload complete');
+        setUploadError(
+          Boolean(
+            (data.blocked?.length ?? 0) > 0 && (data.uploaded?.length ?? 0) === 0
+          )
+        );
         if (data.storage === 'blob' || data.storage === 'local') {
           setStorageMode(data.storage);
         }
+        if (Array.isArray(data.uploaded) && data.uploaded.length > 0) {
+          const uploaded = data.uploaded;
+          setContextFiles((prev) => [...new Set([...prev, ...uploaded])]);
+        }
         resetFileInput();
-        fetchFiles();
+        await fetchFiles();
       } else {
-        setUploadMessage(friendlyError(data.error || data.hint || 'Upload failed'));
+        const parts = [data.error, data.hint]
+          .filter((s): s is string => typeof s === 'string' && s.length > 0)
+          .map((s) => friendlyError(s));
+        setUploadMessage(parts.join(' ') || 'Upload failed');
         setUploadError(true);
       }
-    } catch {
-      setUploadMessage('Upload failed');
+    } catch (err) {
+      setUploadMessage(err instanceof Error ? err.message : 'Upload failed — check network and try again');
       setUploadError(true);
+    } finally {
+      setUploadLoading(false);
     }
   };
 
@@ -166,7 +201,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: scrapeUrl, selector: scrapeSelector }),
       });
-      const data = await res.json();
+      const data = await readApiJson<{ content?: string; error?: string }>(res);
       if (res.ok) {
         setScrapeContent(data.content || '(no content extracted)');
         setScrapeError(false);
@@ -190,38 +225,63 @@ export default function Home() {
       return;
     }
 
+    const filesForAi =
+      contextFiles.length > 0 ? contextFiles : files.map((f) => f.name);
+
     setAiLoading(true);
     setAiResult('');
     setStorageWarning('');
+    setDocumentNotice('');
     setAiError(false);
 
     try {
       const res = await fetch('/api/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: aiMode, prompt: aiPrompt }),
+        body: JSON.stringify({
+          mode: aiMode,
+          prompt: aiPrompt,
+          contextFiles: filesForAi,
+        }),
       });
 
-      const data = await res.json();
+      const data = await readApiJson<{
+        result?: string;
+        error?: string;
+        mode?: string;
+        fileName?: string;
+        fileUrl?: string | null;
+        storageWarning?: string;
+        documentsIncluded?: { name: string }[];
+        documentsSkipped?: string[];
+      }>(res);
 
       if (res.ok) {
-        setAiResult(data.result);
+        setAiResult(data.result || '');
         setStorageWarning(data.storageWarning || '');
+        const included = (data.documentsIncluded as { name: string }[] | undefined)?.map((d) => d.name) ?? [];
+        const skipped = (data.documentsSkipped as string[] | undefined) ?? [];
+        if (included.length > 0 || skipped.length > 0) {
+          const parts: string[] = [];
+          if (included.length > 0) parts.push(`Documents read: ${included.join(', ')}`);
+          if (skipped.length > 0) parts.push(`Skipped: ${skipped.join(', ')}`);
+          setDocumentNotice(parts.join(' · '));
+        }
         setAiError(false);
 
         // Add to history
         const newEntry: HistoryItem = {
           time: new Date().toLocaleString(),
-          mode: data.mode,
+          mode: data.mode ?? aiMode,
           promptPreview: aiPrompt.length > 80 ? aiPrompt.slice(0, 80) + '...' : aiPrompt,
           prompt: aiPrompt,
-          result: data.result,
-          fileName: data.fileName,
-          fileUrl: data.fileUrl,
+          result: data.result ?? '',
+          fileName: data.fileName ?? '',
+          fileUrl: data.fileUrl ?? null,
         };
         setHistory(prev => [...prev, newEntry].slice(-20));
       } else {
-        setAiResult(friendlyError(data.error || 'AI request failed'));
+        setAiResult(friendlyError(typeof data.error === 'string' ? data.error : 'AI request failed'));
         setStorageWarning('');
         setAiError(true);
       }
@@ -272,7 +332,7 @@ export default function Home() {
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data = await readApiJson<{ error?: string }>(res);
         setUploadMessage(data.error || 'Word export failed');
         setUploadError(true);
         return;
@@ -300,12 +360,18 @@ export default function Home() {
     ? `${selectedFiles.length} file(s) selected`
     : 'No files selected';
 
+  const toggleContextFile = (name: string) => {
+    setContextFiles((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+    );
+  };
+
   return (
     <main className={styles.container}>
       <div className={styles.card}>
         <h1 className={styles.title}>Document + AI Portal</h1>
         <p className={styles.meta}>
-          Allowed extensions: .pdf, .doc, .docx, .xls, .xlsx, .csv, .txt, .ppt, .pptx, .md
+          Allowed extensions: .pdf, .doc, .docx, .xls, .xlsx, .csv, .txt, .ppt, .pptx, .md · Max 4 MB per file
           {storageMode === 'local' && ' · Local storage (set BLOB_READ_WRITE_TOKEN for Vercel Blob)'}
         </p>
 
@@ -335,12 +401,17 @@ export default function Home() {
             ref={fileInputRef}
             type="file"
             multiple
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.ppt,.pptx,.md"
             onChange={handleFileChange}
             className={styles.fileInput}
           />
           <p className={styles.meta}>{fileCountText}</p>
-          <button type="submit" className={styles.button} disabled={!selectedFiles}>
-            Upload
+          <button
+            type="submit"
+            className={styles.button}
+            disabled={uploadLoading || !selectedFiles || selectedFiles.length === 0}
+          >
+            {uploadLoading ? 'Uploading…' : 'Upload'}
           </button>
         </form>
 
@@ -407,6 +478,61 @@ export default function Home() {
           </>
         )}
 
+        <h2 className={styles.sectionTitle}>Available Files</h2>
+        <p className={styles.meta}>
+          Check files to include in AI analysis. Uploaded PDFs and documents are read automatically when checked.
+        </p>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>AI</th>
+              <th>Name</th>
+              <th>Size</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {files.length === 0 ? (
+              <tr>
+                <td colSpan={4}>No files uploaded yet. Upload a PDF above, then run AI.</td>
+              </tr>
+            ) : (
+              files.map((file) => (
+                <tr key={file.name}>
+                  <td>
+                    <label className={styles.checkLabel}>
+                      <input
+                        type="checkbox"
+                        checked={contextFiles.includes(file.name)}
+                        onChange={() => toggleContextFile(file.name)}
+                        aria-label={`Include ${file.name} in AI context`}
+                      />
+                    </label>
+                  </td>
+                  <td>{file.name}</td>
+                  <td>{formatSize(file.size)}</td>
+                  <td>
+                    <a href={file.url} download>Download</a>
+                    {' '}
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(file.name)}
+                      className={styles.deleteButton}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+        {files.length > 0 && (
+          <p className={styles.meta}>
+            {(contextFiles.length > 0 ? contextFiles : files.map((f) => f.name)).length} file(s) will be sent to the AI with your prompt.
+          </p>
+        )}
+
         <h2 className={styles.sectionTitle}>AI Prompt</h2>
         <form onSubmit={handleAI}>
           <label htmlFor="mode" className={styles.label}>Mode</label>
@@ -442,6 +568,9 @@ export default function Home() {
             <p className={aiError ? styles.error : styles.ok}>Mode: {aiMode}</p>
             {storageWarning && (
               <p className={styles.error}>{friendlyError(storageWarning)}</p>
+            )}
+            {documentNotice && (
+              <p className={styles.ok}>{documentNotice}</p>
             )}
             <pre className={styles.resultPre}>{aiResult}</pre>
             {!aiError && (
@@ -508,41 +637,6 @@ export default function Home() {
                       }
                     >
                       Word
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-
-        <h2 className={styles.sectionTitle}>Available Files</h2>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Size</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {files.length === 0 ? (
-              <tr>
-                <td colSpan={3}>No files uploaded yet.</td>
-              </tr>
-            ) : (
-              files.map((file) => (
-                <tr key={file.name}>
-                  <td>{file.name}</td>
-                  <td>{formatSize(file.size)}</td>
-                  <td>
-                    <a href={file.url} download>Download</a>
-                    {' '}
-                    <button
-                      onClick={() => handleDelete(file.name)}
-                      className={styles.deleteButton}
-                    >
-                      Delete
                     </button>
                   </td>
                 </tr>
