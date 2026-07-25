@@ -50,6 +50,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 const MULTI_STEP_MAX_OUTPUT = 2048;
+/** Web scrape tool enabled for debate / orchestrate / roundtable */
+const MULTI_STEP_USE_TOOLS = true;
 
 export type AIMode =
   | 'gemini'
@@ -524,7 +526,7 @@ async function runDebateGeminiClaude(
   const geminiText = await runGemini(
     `Take a position and argue for it convincingly.\n\n${effectivePrompt}`,
     {
-      useTools: false,
+      useTools: MULTI_STEP_USE_TOOLS,
       hasDocuments,
       attachPdfs: false,
       maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
@@ -534,7 +536,7 @@ async function runDebateGeminiClaude(
     `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\n` +
       `Now argue the opposing side or provide a strong counter-argument to Gemini's position. ` +
       `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
-    false,
+    MULTI_STEP_USE_TOOLS,
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
@@ -547,7 +549,7 @@ async function runDebateClaudeKimi(
 ): Promise<string> {
   const claudeText = await runClaude(
     `Take a position and argue for it convincingly.\n\n${effectivePrompt}`,
-    false,
+    MULTI_STEP_USE_TOOLS,
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
@@ -555,7 +557,7 @@ async function runDebateClaudeKimi(
     `You are in a debate. Claude AI argued:\n\n${claudeText}\n\n` +
       `Now argue the opposing side or provide a strong counter-argument to Claude's position. ` +
       `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
-    false,
+    MULTI_STEP_USE_TOOLS,
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
@@ -569,7 +571,7 @@ async function runDebateGeminiKimi(
   const geminiText = await runGemini(
     `Take a position and argue for it convincingly.\n\n${effectivePrompt}`,
     {
-      useTools: false,
+      useTools: MULTI_STEP_USE_TOOLS,
       hasDocuments,
       attachPdfs: false,
       maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
@@ -579,7 +581,7 @@ async function runDebateGeminiKimi(
     `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\n` +
       `Now argue the opposing side or provide a strong counter-argument to Gemini's position. ` +
       `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
-    false,
+    MULTI_STEP_USE_TOOLS,
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
@@ -593,7 +595,7 @@ async function runOrchestrate(
   const planText = await runGemini(
     `Create a practical step-by-step plan.\n\n${effectivePrompt}`,
     {
-      useTools: false,
+      useTools: MULTI_STEP_USE_TOOLS,
       hasDocuments,
       attachPdfs: false,
       maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
@@ -601,19 +603,19 @@ async function runOrchestrate(
   );
   const draft = await runClaude(
     `Execute the plan and produce a thorough response.\n\nPlan:\n${planText}\n\n${effectivePrompt}`,
-    false,
+    MULTI_STEP_USE_TOOLS,
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
   const reviewText = await runKimiMode(
     `Review this draft and suggest concrete improvements.\n\nDraft:\n${draft}\n\n${effectivePrompt}`,
-    false,
+    MULTI_STEP_USE_TOOLS,
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
   const final = await runClaude(
     `Write the final polished response, incorporating the review feedback.\n\nReview:\n${reviewText}\n\n${effectivePrompt}`,
-    false,
+    MULTI_STEP_USE_TOOLS,
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
@@ -633,13 +635,13 @@ async function runRoundtable(
     runGemini(effectivePrompt, {
       contextFiles,
       contextMeta,
-      useTools: false,
+      useTools: MULTI_STEP_USE_TOOLS,
       hasDocuments,
       attachPdfs: true,
       maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
     }),
-    runClaude(effectivePrompt, false, hasDocuments, MULTI_STEP_MAX_OUTPUT),
-    runKimiMode(effectivePrompt, false, hasDocuments, MULTI_STEP_MAX_OUTPUT),
+    runClaude(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, MULTI_STEP_MAX_OUTPUT),
+    runKimiMode(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, MULTI_STEP_MAX_OUTPUT),
   ]);
   return (
     `**Gemini:**\n${geminiText}\n\n` +
