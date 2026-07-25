@@ -11,8 +11,8 @@ export interface ContextLimits {
 }
 
 export function getContextLimits(mode: string): ContextLimits {
-  if (mode === 'debate' || mode === 'orchestrate') {
-    return { maxCharsPerFile: 12_000, maxTotalChars: 24_000, attachPdfs: false };
+  if (mode === 'debate' || mode === 'orchestrate' || mode === 'roundtable') {
+    return { maxCharsPerFile: 12_000, maxTotalChars: 24_000, attachPdfs: mode === 'roundtable' };
   }
   return {
     maxCharsPerFile: MAX_CHARS_PER_FILE,

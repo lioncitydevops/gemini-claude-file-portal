@@ -1,15 +1,17 @@
 # Vercel File Portal
 
-A Next.js-based document and AI portal deployed on Vercel. Features file upload/download with drag-and-drop, AI chat with Gemini and Claude (including debate and orchestrate modes), and persistent cloud storage.
+A Next.js-based document and AI portal deployed on Vercel. Features file upload/download with drag-and-drop, AI chat with Gemini, Claude, and Kimi K3 (including debate, orchestrate, and roundtable modes), and persistent cloud storage.
 
 ## Features
 
 - **File Management**: Upload, download, and delete documents (.pdf, .doc, .docx, .xls, .xlsx, .csv, .txt, .ppt, .pptx, .md)
 - **AI Chat**: Multiple modes
-  - **Gemini**: Google Gemini 1.5 Pro
-  - **Claude**: Anthropic Claude 3.5 Sonnet
-  - **Debate**: Gemini takes a position, Claude critiques and improves
-  - **Orchestrate**: Multi-step collaborative workflow between both AIs
+  - **Gemini**: Google Gemini 2.5 Flash
+  - **Claude**: Anthropic Claude Sonnet
+  - **Kimi K3**: Moonshot AI Kimi K3
+  - **Debate**: Gemini vs Claude
+  - **Orchestrate**: Gemini plans → Claude drafts → Kimi reviews → Claude finalizes
+  - **Roundtable**: All three models respond in parallel
 - **Cloud Storage**: All files and AI outputs stored in Vercel Blob
 - **Chat History**: Last 20 AI interactions with downloadable Markdown outputs
 
@@ -19,6 +21,7 @@ A Next.js-based document and AI portal deployed on Vercel. Features file upload/
 - Vercel account (free tier works)
 - Google AI Studio API key (for Gemini)
 - Anthropic API key (for Claude)
+- Moonshot API key (for Kimi K3) — [platform.kimi.ai](https://platform.kimi.ai/console/api-keys)
 
 ## Local Development
 
@@ -34,6 +37,7 @@ A Next.js-based document and AI portal deployed on Vercel. Features file upload/
    Edit `.env.local` and add your API keys:
    - `GOOGLE_GENERATIVE_AI_API_KEY` - Get from https://aistudio.google.com/app/apikey
    - `ANTHROPIC_API_KEY` - Get from https://console.anthropic.com/settings/keys
+   - `MOONSHOT_API_KEY` - Get from https://platform.kimi.ai/console/api-keys
 
 3. **Run the development server**:
    ```bash

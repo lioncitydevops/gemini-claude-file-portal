@@ -3,6 +3,7 @@ import { generateText, tool } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { kimiApiKeyConfigured, runKimi } from '@/lib/kimi';
 import {
   buildDocumentContext,
   composePromptWithContext,
@@ -50,7 +51,7 @@ export const maxDuration = 300;
 
 const MULTI_STEP_MAX_OUTPUT = 2048;
 
-export type AIMode = 'gemini' | 'claude' | 'debate' | 'orchestrate';
+export type AIMode = 'gemini' | 'claude' | 'kimi' | 'debate' | 'orchestrate' | 'roundtable';
 
 interface AIRequest {
   mode: AIMode;
@@ -107,7 +108,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       const stored = await listStoredFiles();
       contextFiles = stored.map((f) => f.name);
     }
-    if (!mode || !['gemini', 'claude', 'debate', 'orchestrate'].includes(mode)) {
+    if (!mode || !['gemini', 'claude', 'kimi', 'debate', 'orchestrate', 'roundtable'].includes(mode)) {
       return NextResponse.json(
         { error: 'Unsupported mode.', requestId },
         { status: 400 }
@@ -132,9 +133,21 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 500 }
       );
     }
-    if ((mode === 'claude' || mode === 'debate' || mode === 'orchestrate') && !process.env.ANTHROPIC_API_KEY) {
+    if ((mode === 'claude' || mode === 'debate' || mode === 'orchestrate' || mode === 'roundtable') && !process.env.ANTHROPIC_API_KEY) {
       return NextResponse.json(
         { error: 'Claude API key is not configured.', requestId },
+        { status: 500 }
+      );
+    }
+    if ((mode === 'kimi' || mode === 'roundtable') && !kimiApiKeyConfigured()) {
+      return NextResponse.json(
+        { error: 'Kimi API key is not configured. Set MOONSHOT_API_KEY.', requestId },
+        { status: 500 }
+      );
+    }
+    if (mode === 'orchestrate' && !kimiApiKeyConfigured()) {
+      return NextResponse.json(
+        { error: 'Orchestrate mode now uses Kimi K3 — set MOONSHOT_API_KEY.', requestId },
         { status: 500 }
       );
     }
@@ -192,11 +205,21 @@ export async function POST(request: Request): Promise<NextResponse> {
       case 'claude':
         result = await runClaude(effectivePrompt, true, contextFiles.length > 0);
         break;
+      case 'kimi':
+        result = await runKimiMode(effectivePrompt, true, contextFiles.length > 0);
+        break;
       case 'debate':
         result = await runDebate(effectivePrompt, contextFiles.length > 0);
         break;
       case 'orchestrate':
         result = await runOrchestrate(effectivePrompt, contextFiles.length > 0);
+        break;
+      case 'roundtable':
+        result = await runRoundtable(effectivePrompt, {
+          contextFiles,
+          contextMeta,
+          hasDocuments: contextFiles.length > 0,
+        });
         break;
       default: {
         const _exhaustiveCheck: never = mode;
@@ -433,6 +456,26 @@ async function runClaude(
   return text;
 }
 
+async function runKimiMode(
+  prompt: string,
+  useTools = true,
+  hasDocuments = false,
+  maxTokens?: number
+): Promise<string> {
+  return runKimi({
+    prompt,
+    system: useTools
+      ? systemInstruction(hasDocuments)
+      : hasDocuments
+        ? systemInstruction(true)
+        : undefined,
+    useTools,
+    maxTokens,
+    scrapeUrlForAI,
+    scrapeToolDescription: SCRAPE_TOOL_DESCRIPTION,
+  });
+}
+
 async function runDebate(
   effectivePrompt: string,
   hasDocuments: boolean
@@ -476,14 +519,11 @@ async function runOrchestrate(
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
-  const reviewText = await runGemini(
+  const reviewText = await runKimiMode(
     `Review this draft and suggest concrete improvements.\n\nDraft:\n${draft}\n\n${effectivePrompt}`,
-    {
-      useTools: false,
-      hasDocuments,
-      attachPdfs: false,
-      maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
-    }
+    false,
+    hasDocuments,
+    MULTI_STEP_MAX_OUTPUT
   );
   const final = await runClaude(
     `Write the final polished response, incorporating the review feedback.\n\nReview:\n${reviewText}\n\n${effectivePrompt}`,
@@ -491,7 +531,35 @@ async function runOrchestrate(
     hasDocuments,
     MULTI_STEP_MAX_OUTPUT
   );
-  return `**Plan (Gemini):**\n${planText}\n\n**Draft (Claude):**\n${draft}\n\n**Review (Gemini):**\n${reviewText}\n\n**Final (Claude):**\n${final}`;
+  return `**Plan (Gemini):**\n${planText}\n\n**Draft (Claude):**\n${draft}\n\n**Review (Kimi K3):**\n${reviewText}\n\n**Final (Claude):**\n${final}`;
+}
+
+async function runRoundtable(
+  effectivePrompt: string,
+  options: {
+    contextFiles: string[];
+    contextMeta: AIContextMeta;
+    hasDocuments: boolean;
+  }
+): Promise<string> {
+  const { contextFiles, contextMeta, hasDocuments } = options;
+  const [geminiText, claudeText, kimiText] = await Promise.all([
+    runGemini(effectivePrompt, {
+      contextFiles,
+      contextMeta,
+      useTools: false,
+      hasDocuments,
+      attachPdfs: true,
+      maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
+    }),
+    runClaude(effectivePrompt, false, hasDocuments, MULTI_STEP_MAX_OUTPUT),
+    runKimiMode(effectivePrompt, false, hasDocuments, MULTI_STEP_MAX_OUTPUT),
+  ]);
+  return (
+    `**Gemini:**\n${geminiText}\n\n` +
+    `**Claude:**\n${claudeText}\n\n` +
+    `**Kimi K3:**\n${kimiText}`
+  );
 }
 
 function getClientIp(request: Request): string {
