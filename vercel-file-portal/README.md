@@ -9,7 +9,7 @@ A Next.js-based document and AI portal deployed on Vercel. Features file upload/
   - **Gemini**: Google Gemini 2.5 Flash
   - **Claude**: Anthropic Claude Sonnet
   - **Kimi K3**: Moonshot AI Kimi K3
-  - **Debate**: Gemini vs Claude
+  - **Debate**: Gemini vs Claude, Claude vs Kimi K3, or Gemini vs Kimi K3
   - **Orchestrate**: Gemini plans → Claude drafts → Kimi reviews → Claude finalizes
   - **Roundtable**: All three models respond in parallel
 - **Cloud Storage**: All files and AI outputs stored in Vercel Blob

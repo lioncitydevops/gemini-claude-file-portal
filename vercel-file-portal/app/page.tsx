@@ -21,7 +21,23 @@ interface HistoryItem {
   fileUrl: string | null;
 }
 
-type AIMode = 'gemini' | 'claude' | 'kimi' | 'debate' | 'orchestrate' | 'roundtable';
+type AIMode =
+  | 'gemini'
+  | 'claude'
+  | 'kimi'
+  | 'debate'
+  | 'debate_claude_kimi'
+  | 'debate_gemini_kimi'
+  | 'orchestrate'
+  | 'roundtable';
+
+const MULTI_STEP_MODES: AIMode[] = [
+  'debate',
+  'debate_claude_kimi',
+  'debate_gemini_kimi',
+  'orchestrate',
+  'roundtable',
+];
 
 export default function Home() {
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -234,10 +250,7 @@ export default function Home() {
     setDocumentNotice('');
     setAiError(false);
 
-    const aiTimeoutMs =
-      aiMode === 'debate' || aiMode === 'orchestrate' || aiMode === 'roundtable'
-        ? 300_000
-        : 120_000;
+    const aiTimeoutMs = MULTI_STEP_MODES.includes(aiMode) ? 300_000 : 120_000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), aiTimeoutMs);
 
@@ -562,6 +575,8 @@ export default function Home() {
             <option value="claude">Claude</option>
             <option value="kimi">Kimi K3</option>
             <option value="debate">Gemini vs Claude (debate)</option>
+            <option value="debate_claude_kimi">Claude vs Kimi K3 (debate)</option>
+            <option value="debate_gemini_kimi">Gemini vs Kimi K3 (debate)</option>
             <option value="orchestrate">Orchestrate (Gemini → Claude → Kimi → Claude)</option>
             <option value="roundtable">Roundtable (Gemini + Claude + Kimi)</option>
           </select>

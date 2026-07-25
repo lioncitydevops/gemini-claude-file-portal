@@ -51,7 +51,15 @@ export const maxDuration = 300;
 
 const MULTI_STEP_MAX_OUTPUT = 2048;
 
-export type AIMode = 'gemini' | 'claude' | 'kimi' | 'debate' | 'orchestrate' | 'roundtable';
+export type AIMode =
+  | 'gemini'
+  | 'claude'
+  | 'kimi'
+  | 'debate'
+  | 'debate_claude_kimi'
+  | 'debate_gemini_kimi'
+  | 'orchestrate'
+  | 'roundtable';
 
 interface AIRequest {
   mode: AIMode;
@@ -108,7 +116,19 @@ export async function POST(request: Request): Promise<NextResponse> {
       const stored = await listStoredFiles();
       contextFiles = stored.map((f) => f.name);
     }
-    if (!mode || !['gemini', 'claude', 'kimi', 'debate', 'orchestrate', 'roundtable'].includes(mode)) {
+    if (
+      !mode ||
+      ![
+        'gemini',
+        'claude',
+        'kimi',
+        'debate',
+        'debate_claude_kimi',
+        'debate_gemini_kimi',
+        'orchestrate',
+        'roundtable',
+      ].includes(mode)
+    ) {
       return NextResponse.json(
         { error: 'Unsupported mode.', requestId },
         { status: 400 }
@@ -127,27 +147,42 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 400 }
       );
     }
-    if ((mode === 'gemini' || mode === 'debate' || mode === 'orchestrate') && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    if (
+      (mode === 'gemini' ||
+        mode === 'debate' ||
+        mode === 'debate_gemini_kimi' ||
+        mode === 'orchestrate' ||
+        mode === 'roundtable') &&
+      !process.env.GOOGLE_GENERATIVE_AI_API_KEY
+    ) {
       return NextResponse.json(
         { error: 'Gemini API key is not configured.', requestId },
         { status: 500 }
       );
     }
-    if ((mode === 'claude' || mode === 'debate' || mode === 'orchestrate' || mode === 'roundtable') && !process.env.ANTHROPIC_API_KEY) {
+    if (
+      (mode === 'claude' ||
+        mode === 'debate' ||
+        mode === 'debate_claude_kimi' ||
+        mode === 'orchestrate' ||
+        mode === 'roundtable') &&
+      !process.env.ANTHROPIC_API_KEY
+    ) {
       return NextResponse.json(
         { error: 'Claude API key is not configured.', requestId },
         { status: 500 }
       );
     }
-    if ((mode === 'kimi' || mode === 'roundtable') && !kimiApiKeyConfigured()) {
+    if (
+      (mode === 'kimi' ||
+        mode === 'debate_claude_kimi' ||
+        mode === 'debate_gemini_kimi' ||
+        mode === 'roundtable' ||
+        mode === 'orchestrate') &&
+      !kimiApiKeyConfigured()
+    ) {
       return NextResponse.json(
         { error: 'Kimi API key is not configured. Set MOONSHOT_API_KEY.', requestId },
-        { status: 500 }
-      );
-    }
-    if (mode === 'orchestrate' && !kimiApiKeyConfigured()) {
-      return NextResponse.json(
-        { error: 'Orchestrate mode now uses Kimi K3 — set MOONSHOT_API_KEY.', requestId },
         { status: 500 }
       );
     }
@@ -209,7 +244,13 @@ export async function POST(request: Request): Promise<NextResponse> {
         result = await runKimiMode(effectivePrompt, true, contextFiles.length > 0);
         break;
       case 'debate':
-        result = await runDebate(effectivePrompt, contextFiles.length > 0);
+        result = await runDebateGeminiClaude(effectivePrompt, contextFiles.length > 0);
+        break;
+      case 'debate_claude_kimi':
+        result = await runDebateClaudeKimi(effectivePrompt, contextFiles.length > 0);
+        break;
+      case 'debate_gemini_kimi':
+        result = await runDebateGeminiKimi(effectivePrompt, contextFiles.length > 0);
         break;
       case 'orchestrate':
         result = await runOrchestrate(effectivePrompt, contextFiles.length > 0);
@@ -476,7 +517,7 @@ async function runKimiMode(
   });
 }
 
-async function runDebate(
+async function runDebateGeminiClaude(
   effectivePrompt: string,
   hasDocuments: boolean
 ): Promise<string> {
@@ -498,6 +539,51 @@ async function runDebate(
     MULTI_STEP_MAX_OUTPUT
   );
   return `**Gemini:**\n${geminiText}\n\n**Claude:**\n${claudeText}`;
+}
+
+async function runDebateClaudeKimi(
+  effectivePrompt: string,
+  hasDocuments: boolean
+): Promise<string> {
+  const claudeText = await runClaude(
+    `Take a position and argue for it convincingly.\n\n${effectivePrompt}`,
+    false,
+    hasDocuments,
+    MULTI_STEP_MAX_OUTPUT
+  );
+  const kimiText = await runKimiMode(
+    `You are in a debate. Claude AI argued:\n\n${claudeText}\n\n` +
+      `Now argue the opposing side or provide a strong counter-argument to Claude's position. ` +
+      `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
+    false,
+    hasDocuments,
+    MULTI_STEP_MAX_OUTPUT
+  );
+  return `**Claude:**\n${claudeText}\n\n**Kimi K3:**\n${kimiText}`;
+}
+
+async function runDebateGeminiKimi(
+  effectivePrompt: string,
+  hasDocuments: boolean
+): Promise<string> {
+  const geminiText = await runGemini(
+    `Take a position and argue for it convincingly.\n\n${effectivePrompt}`,
+    {
+      useTools: false,
+      hasDocuments,
+      attachPdfs: false,
+      maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
+    }
+  );
+  const kimiText = await runKimiMode(
+    `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\n` +
+      `Now argue the opposing side or provide a strong counter-argument to Gemini's position. ` +
+      `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
+    false,
+    hasDocuments,
+    MULTI_STEP_MAX_OUTPUT
+  );
+  return `**Gemini:**\n${geminiText}\n\n**Kimi K3:**\n${kimiText}`;
 }
 
 async function runOrchestrate(

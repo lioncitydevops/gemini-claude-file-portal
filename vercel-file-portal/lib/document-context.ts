@@ -11,7 +11,13 @@ export interface ContextLimits {
 }
 
 export function getContextLimits(mode: string): ContextLimits {
-  if (mode === 'debate' || mode === 'orchestrate' || mode === 'roundtable') {
+  if (
+    mode === 'debate' ||
+    mode === 'debate_claude_kimi' ||
+    mode === 'debate_gemini_kimi' ||
+    mode === 'orchestrate' ||
+    mode === 'roundtable'
+  ) {
     return { maxCharsPerFile: 12_000, maxTotalChars: 24_000, attachPdfs: mode === 'roundtable' };
   }
   return {
