@@ -13,6 +13,7 @@ interface KimiToolCall {
 interface KimiMessage {
   role: KimiRole;
   content?: string | null;
+  reasoning_content?: string | null;
   tool_calls?: KimiToolCall[];
   tool_call_id?: string;
 }
@@ -48,7 +49,11 @@ function kimiApiKey(): string {
 
 async function kimiCompletion(
   messages: KimiMessage[],
-  options: { tools?: KimiToolDef[]; maxCompletionTokens?: number }
+  options: {
+    tools?: KimiToolDef[];
+    maxCompletionTokens?: number;
+    reasoningEffort?: 'low' | 'high' | 'max';
+  }
 ): Promise<KimiMessage> {
   const res = await fetch(`${kimiBaseUrl()}/chat/completions`, {
     method: 'POST',
@@ -59,6 +64,7 @@ async function kimiCompletion(
     body: JSON.stringify({
       model: kimiModelId(),
       messages,
+      reasoning_effort: options.reasoningEffort ?? 'low',
       ...(options.tools?.length ? { tools: options.tools, tool_choice: 'auto' } : {}),
       ...(options.maxCompletionTokens
         ? { max_completion_tokens: options.maxCompletionTokens }
@@ -102,11 +108,16 @@ function scrapeToolDef(description: string): KimiToolDef {
   };
 }
 
+function extractKimiText(message: KimiMessage): string {
+  return (message.content || '').trim();
+}
+
 export async function runKimi(options: {
   prompt: string;
   system?: string;
   useTools?: boolean;
   maxTokens?: number;
+  reasoningEffort?: 'low' | 'high' | 'max';
   scrapeUrlForAI: (url: string, selector?: string) => Promise<string>;
   scrapeToolDescription: string;
 }): Promise<string> {
@@ -115,6 +126,7 @@ export async function runKimi(options: {
     system,
     useTools = true,
     maxTokens,
+    reasoningEffort = 'low',
     scrapeUrlForAI,
     scrapeToolDescription,
   } = options;
@@ -124,20 +136,39 @@ export async function runKimi(options: {
   messages.push({ role: 'user', content: prompt });
 
   const tools = useTools ? [scrapeToolDef(scrapeToolDescription)] : undefined;
+  const completionBudget = maxTokens ?? 4096;
 
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     const message = await kimiCompletion(messages, {
       tools,
-      maxCompletionTokens: maxTokens,
+      maxCompletionTokens: completionBudget,
+      reasoningEffort,
     });
 
     messages.push(message);
 
     const toolCalls = message.tool_calls ?? [];
     if (!toolCalls.length) {
-      const text = (message.content || '').trim();
+      const text = extractKimiText(message);
       if (text) return text;
-      throw new Error('Kimi API returned an empty response.');
+
+      // Kimi K3 may spend the token budget on reasoning and return empty content.
+      messages.push({
+        role: 'user',
+        content: 'Provide your final answer now as plain text. Do not use tools.',
+      });
+      const retry = await kimiCompletion(messages, {
+        tools: undefined,
+        maxCompletionTokens: Math.max(completionBudget, 8192),
+        reasoningEffort: 'low',
+      });
+      messages.push(retry);
+      const retryText = extractKimiText(retry);
+      if (retryText) return retryText;
+
+      throw new Error(
+        'Kimi API returned an empty response. Try a shorter prompt or switch to Kimi K3 solo mode.'
+      );
     }
 
     for (const call of toolCalls) {

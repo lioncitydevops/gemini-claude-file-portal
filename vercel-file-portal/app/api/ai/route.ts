@@ -50,6 +50,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 const MULTI_STEP_MAX_OUTPUT = 2048;
+const KIMI_MULTI_STEP_MAX_OUTPUT = 8192;
 /** Web scrape tool enabled for debate / orchestrate / roundtable */
 const MULTI_STEP_USE_TOOLS = true;
 
@@ -503,7 +504,8 @@ async function runKimiMode(
   prompt: string,
   useTools = true,
   hasDocuments = false,
-  maxTokens?: number
+  maxTokens?: number,
+  reasoningEffort: 'low' | 'high' | 'max' = 'low'
 ): Promise<string> {
   return runKimi({
     prompt,
@@ -513,10 +515,19 @@ async function runKimiMode(
         ? systemInstruction(true)
         : undefined,
     useTools,
-    maxTokens,
+    maxTokens: maxTokens ?? KIMI_MULTI_STEP_MAX_OUTPUT,
+    reasoningEffort,
     scrapeUrlForAI,
     scrapeToolDescription: SCRAPE_TOOL_DESCRIPTION,
   });
+}
+
+function truncateForDebate(text: string, maxChars = 6000): string {
+  if (text.length <= maxChars) return text;
+  return (
+    text.slice(0, maxChars) +
+    '\n\n[Opponent argument truncated for length — respond to the key points above.]'
+  );
 }
 
 async function runDebateGeminiClaude(
@@ -554,12 +565,12 @@ async function runDebateClaudeKimi(
     MULTI_STEP_MAX_OUTPUT
   );
   const kimiText = await runKimiMode(
-    `You are in a debate. Claude AI argued:\n\n${claudeText}\n\n` +
+    `You are in a debate. Claude AI argued:\n\n${truncateForDebate(claudeText)}\n\n` +
       `Now argue the opposing side or provide a strong counter-argument to Claude's position. ` +
       `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
     MULTI_STEP_USE_TOOLS,
     hasDocuments,
-    MULTI_STEP_MAX_OUTPUT
+    KIMI_MULTI_STEP_MAX_OUTPUT
   );
   return `**Claude:**\n${claudeText}\n\n**Kimi K3:**\n${kimiText}`;
 }
@@ -578,12 +589,12 @@ async function runDebateGeminiKimi(
     }
   );
   const kimiText = await runKimiMode(
-    `You are in a debate. Gemini AI argued:\n\n${geminiText}\n\n` +
+    `You are in a debate. Gemini AI argued:\n\n${truncateForDebate(geminiText)}\n\n` +
       `Now argue the opposing side or provide a strong counter-argument to Gemini's position. ` +
       `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
     MULTI_STEP_USE_TOOLS,
     hasDocuments,
-    MULTI_STEP_MAX_OUTPUT
+    KIMI_MULTI_STEP_MAX_OUTPUT
   );
   return `**Gemini:**\n${geminiText}\n\n**Kimi K3:**\n${kimiText}`;
 }
@@ -608,10 +619,10 @@ async function runOrchestrate(
     MULTI_STEP_MAX_OUTPUT
   );
   const reviewText = await runKimiMode(
-    `Review this draft and suggest concrete improvements.\n\nDraft:\n${draft}\n\n${effectivePrompt}`,
+    `Review this draft and suggest concrete improvements.\n\nDraft:\n${truncateForDebate(draft, 8000)}\n\n${effectivePrompt}`,
     MULTI_STEP_USE_TOOLS,
     hasDocuments,
-    MULTI_STEP_MAX_OUTPUT
+    KIMI_MULTI_STEP_MAX_OUTPUT
   );
   const final = await runClaude(
     `Write the final polished response, incorporating the review feedback.\n\nReview:\n${reviewText}\n\n${effectivePrompt}`,
@@ -641,7 +652,7 @@ async function runRoundtable(
       maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
     }),
     runClaude(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, MULTI_STEP_MAX_OUTPUT),
-    runKimiMode(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, MULTI_STEP_MAX_OUTPUT),
+    runKimiMode(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, KIMI_MULTI_STEP_MAX_OUTPUT),
   ]);
   return (
     `**Gemini:**\n${geminiText}\n\n` +
@@ -676,18 +687,38 @@ function mapProviderError(error: unknown): { status: number; message: string; co
   const msg = error instanceof Error ? error.message : String(error);
   const lower = msg.toLowerCase();
 
+  if (lower.includes('invalid authentication') || lower.includes('invalid_authentication')) {
+    return {
+      status: 500,
+      code: 'provider_auth',
+      message: 'Kimi API key is invalid. Update MOONSHOT_API_KEY on Vercel and redeploy.',
+    };
+  }
+  if (lower.includes('empty response')) {
+    return {
+      status: 502,
+      code: 'provider_empty_response',
+      message: msg,
+    };
+  }
+  if (lower.includes('insufficient balance') || lower.includes('exceeded_current_quota')) {
+    return {
+      status: 429,
+      code: 'provider_quota',
+      message:
+        'Kimi billing limit reached. Top up at platform.kimi.ai, then retry.',
+    };
+  }
+
   if (
     lower.includes('too many requests') ||
     lower.includes('quota exceeded') ||
-    lower.includes('insufficient balance') ||
-    lower.includes('exceeded_current_quota') ||
     lower.includes('[429')
   ) {
     return {
       status: 429,
       code: 'provider_quota',
-      message:
-        'Provider quota or billing limit reached. For Kimi K3, top up at least $1 at platform.kimi.ai, then retry.',
+      message: 'AI provider rate limit reached. Wait a minute and try again.',
     };
   }
   if (lower.includes('model') && lower.includes('not found')) {
