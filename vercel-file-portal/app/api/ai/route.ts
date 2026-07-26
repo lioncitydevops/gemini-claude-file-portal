@@ -51,6 +51,7 @@ export const maxDuration = 300;
 
 const MULTI_STEP_MAX_OUTPUT = 2048;
 const KIMI_MULTI_STEP_MAX_OUTPUT = 8192;
+const CLAUDE_MULTI_STEP_MAX_OUTPUT = 4096;
 /** Web scrape tool enabled for debate / orchestrate / roundtable */
 const MULTI_STEP_USE_TOOLS = true;
 
@@ -470,17 +471,36 @@ async function runGemini(
   return result.response.text();
 }
 
+function collectGenerateText(
+  result: Awaited<ReturnType<typeof generateText>>
+): string {
+  if (result.text?.trim()) return result.text.trim();
+  const fromSteps = result.steps
+    ?.map((step) => step.text)
+    .filter((part) => part?.trim())
+    .join('\n\n')
+    .trim();
+  return fromSteps || '';
+}
+
 async function runClaude(
   prompt: string,
   useTools = true,
   hasDocuments = false,
   maxTokens?: number
 ): Promise<string> {
-  const { text } = await generateText({
+  const tokenBudget = maxTokens ?? CLAUDE_MULTI_STEP_MAX_OUTPUT;
+  const system = useTools
+    ? systemInstruction(hasDocuments)
+    : hasDocuments
+      ? systemInstruction(true)
+      : undefined;
+
+  const result = await generateText({
     model: anthropic('claude-sonnet-4-6'),
-    system: useTools ? systemInstruction(hasDocuments) : hasDocuments ? systemInstruction(true) : undefined,
+    system,
     prompt,
-    maxTokens,
+    maxTokens: tokenBudget,
     ...(useTools
       ? {
           tools: {
@@ -497,6 +517,24 @@ async function runClaude(
         }
       : {}),
   });
+
+  let text = collectGenerateText(result);
+  if (!text) {
+    const retry = await generateText({
+      model: anthropic('claude-sonnet-4-6'),
+      system,
+      prompt: `${prompt}\n\nProvide your complete answer now as plain text. Do not use tools.`,
+      maxTokens: tokenBudget,
+    });
+    text = collectGenerateText(retry);
+  }
+
+  if (!text) {
+    throw new Error(
+      'Claude returned an empty response. Try a shorter prompt or run Claude mode directly.'
+    );
+  }
+
   return text;
 }
 
@@ -549,7 +587,7 @@ async function runDebateGeminiClaude(
       `Base your answer on the uploaded documents when provided.\n\n${effectivePrompt}`,
     MULTI_STEP_USE_TOOLS,
     hasDocuments,
-    MULTI_STEP_MAX_OUTPUT
+    CLAUDE_MULTI_STEP_MAX_OUTPUT
   );
   return `**Gemini:**\n${geminiText}\n\n**Claude:**\n${claudeText}`;
 }
@@ -562,7 +600,7 @@ async function runDebateClaudeKimi(
     `Take a position and argue for it convincingly.\n\n${effectivePrompt}`,
     MULTI_STEP_USE_TOOLS,
     hasDocuments,
-    MULTI_STEP_MAX_OUTPUT
+    CLAUDE_MULTI_STEP_MAX_OUTPUT
   );
   const kimiText = await runKimiMode(
     `You are in a debate. Claude AI argued:\n\n${truncateForDebate(claudeText)}\n\n` +
@@ -616,7 +654,7 @@ async function runOrchestrate(
     `Execute the plan and produce a thorough response.\n\nPlan:\n${planText}\n\n${effectivePrompt}`,
     MULTI_STEP_USE_TOOLS,
     hasDocuments,
-    MULTI_STEP_MAX_OUTPUT
+    CLAUDE_MULTI_STEP_MAX_OUTPUT
   );
   const reviewText = await runKimiMode(
     `Review this draft and suggest concrete improvements.\n\nDraft:\n${truncateForDebate(draft, 8000)}\n\n${effectivePrompt}`,
@@ -628,7 +666,7 @@ async function runOrchestrate(
     `Write the final polished response, incorporating the review feedback.\n\nReview:\n${reviewText}\n\n${effectivePrompt}`,
     MULTI_STEP_USE_TOOLS,
     hasDocuments,
-    MULTI_STEP_MAX_OUTPUT
+    CLAUDE_MULTI_STEP_MAX_OUTPUT
   );
   return `**Plan (Gemini):**\n${planText}\n\n**Draft (Claude):**\n${draft}\n\n**Review (Kimi K3):**\n${reviewText}\n\n**Final (Claude):**\n${final}`;
 }
@@ -651,7 +689,7 @@ async function runRoundtable(
       attachPdfs: true,
       maxOutputTokens: MULTI_STEP_MAX_OUTPUT,
     }),
-    runClaude(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, MULTI_STEP_MAX_OUTPUT),
+    runClaude(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, CLAUDE_MULTI_STEP_MAX_OUTPUT),
     runKimiMode(effectivePrompt, MULTI_STEP_USE_TOOLS, hasDocuments, KIMI_MULTI_STEP_MAX_OUTPUT),
   ]);
   return (
