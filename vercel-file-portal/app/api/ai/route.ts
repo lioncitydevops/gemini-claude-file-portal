@@ -676,11 +676,18 @@ function mapProviderError(error: unknown): { status: number; message: string; co
   const msg = error instanceof Error ? error.message : String(error);
   const lower = msg.toLowerCase();
 
-  if (lower.includes('too many requests') || lower.includes('quota exceeded') || lower.includes('[429')) {
+  if (
+    lower.includes('too many requests') ||
+    lower.includes('quota exceeded') ||
+    lower.includes('insufficient balance') ||
+    lower.includes('exceeded_current_quota') ||
+    lower.includes('[429')
+  ) {
     return {
       status: 429,
       code: 'provider_quota',
-      message: 'Provider quota/rate limit reached. Please retry shortly or check provider billing/quota.',
+      message:
+        'Provider quota or billing limit reached. For Kimi K3, top up at least $1 at platform.kimi.ai, then retry.',
     };
   }
   if (lower.includes('model') && lower.includes('not found')) {
