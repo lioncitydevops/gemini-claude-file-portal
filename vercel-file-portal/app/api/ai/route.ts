@@ -471,9 +471,10 @@ async function runGemini(
   return result.response.text();
 }
 
-function collectGenerateText(
-  result: Awaited<ReturnType<typeof generateText>>
-): string {
+function collectGenerateText(result: {
+  text?: string;
+  steps?: Array<{ text?: string }>;
+}): string {
   if (result.text?.trim()) return result.text.trim();
   const fromSteps = result.steps
     ?.map((step) => step.text)
